@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-bg: #FFFFFF;
+    --color-bg-subtle: #F8FAFC;
+    --color-border: #E2E8F0;
+    --color-text: #0F172A;
+    --color-text-muted: #64748B;
+  }
+
+  .dark {
+    --color-bg: #0B0F19;
+    --color-bg-subtle: #111827;
+    --color-border: #1F2937;
+    --color-text: #F8FAFC;
+    --color-text-muted: #94A3B8;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 9999px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.4);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.7);
+}
+
+/* Number font styling */
+.font-mono-numeric {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Subtle glow animations */
+.glow-green {
+  box-shadow: 0 0 20px -3px rgba(0, 208, 156, 0.25);
+}
+
+.glow-red {
+  box-shadow: 0 0 20px -3px rgba(235, 91, 91, 0.25);
+}
