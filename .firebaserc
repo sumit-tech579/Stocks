@@ -1,5 +1,7 @@
 {
-  "projects": {},
+  "projects": {
+    "default": "tradenest-1cc6b"
+  },
   "targets": {},
   "etags": {}
 }

@@ -3,5 +3,20 @@
     "providers": {
       "emailPassword": true
     }
+  },
+  "hosting": {
+    "site": "tradenest-1cc6b",
+    "public": "dist",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
   }
 }
