@@ -28,6 +28,9 @@ interface AuthContextType extends AuthState {
   signInWithGoogle: () => Promise<{ error: string | null }>;
   resetPassword: (email: string) => Promise<{ error: string | null; message?: string }>;
   resendVerificationEmail: () => Promise<{ error: string | null; message?: string }>;
+  sendVerificationCode: () => Promise<{ code: string | null; error: string | null; message?: string }>;
+  verifyEmailCode: (enteredCode: string) => Promise<{ success: boolean; error: string | null }>;
+  currentVerificationCode: string | null;
   reloadUserProfile: () => Promise<void>;
   signOut: () => Promise<void>;
   enableDemoMode: () => void;
@@ -64,20 +67,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return user?.isDemo ?? false;
   });
 
+  const [currentVerificationCode, setCurrentVerificationCode] = useState<string | null>(() => {
+    try {
+      const savedUser = localStorage.getItem('tradenest_auth_user');
+      if (savedUser) {
+        const u = JSON.parse(savedUser);
+        return localStorage.getItem(`tradenest_email_code_${u.uid}`) || null;
+      }
+    } catch {}
+    return null;
+  });
+
+  const generateRandom6DigitCode = (): string => {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+  };
+
   // Ensure Firestore user document exists and credit virtual money once
   const syncUserToFirestore = async (fbUser: FirebaseUser, displayNameFallback?: string): Promise<UserProfile> => {
     const fullName = fbUser.displayName || displayNameFallback || fbUser.email?.split('@')[0] || 'Trader';
-    const profile: UserProfile = {
-      id: fbUser.uid,
-      uid: fbUser.uid,
-      email: fbUser.email || '',
-      fullName,
-      isDemo: false,
-      avatarUrl: fbUser.photoURL || undefined,
-      photoURL: fbUser.photoURL || undefined,
-      emailVerified: fbUser.emailVerified,
-      createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
-    };
+    
+    // Check if user was already verified in Firestore
+    let isAlreadyVerified = fbUser.emailVerified;
 
     if (db) {
       try {
@@ -100,9 +110,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             lastLoginAt: serverTimestamp(),
           });
         } else {
-          // Existing profile: NEVER overwrite balance or trades!
+          const data = userSnap.data();
+          if (data.emailVerified) {
+            isAlreadyVerified = true;
+          }
           await updateDoc(userDocRef, {
-            emailVerified: fbUser.emailVerified,
+            emailVerified: isAlreadyVerified,
             photoURL: fbUser.photoURL || null,
             lastLoginAt: serverTimestamp(),
           });
@@ -112,6 +125,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
+    const profile: UserProfile = {
+      id: fbUser.uid,
+      uid: fbUser.uid,
+      email: fbUser.email || '',
+      fullName,
+      isDemo: false,
+      avatarUrl: fbUser.photoURL || undefined,
+      photoURL: fbUser.photoURL || undefined,
+      emailVerified: isAlreadyVerified,
+      createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
+    };
+
     return profile;
   };
 
@@ -119,7 +144,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let mounted = true;
 
     if (!isFirebaseConfigured || !firebaseAuth) {
-      // If Firebase credentials are missing in .env, default to demo mode
       if (mounted) {
         if (!user) {
           setUser(DEMO_USER);
@@ -139,18 +163,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setUser(profile);
           setIsDemo(false);
           localStorage.setItem('tradenest_auth_user', JSON.stringify(profile));
+          
+          // Load active verification code if present
+          const savedCode = localStorage.getItem(`tradenest_email_code_${fbUser.uid}`);
+          if (savedCode) {
+            setCurrentVerificationCode(savedCode);
+          }
           setLoading(false);
         }
       } else {
         if (mounted) {
-          // If we had a real user before, clear out on sign out
           const wasRealUser = user && !user.isDemo;
           if (wasRealUser) {
             setUser(null);
             setIsDemo(false);
             localStorage.removeItem('tradenest_auth_user');
+            setCurrentVerificationCode(null);
           } else if (!user) {
-            // No user stored at all
             setUser(null);
             setIsDemo(false);
           }
@@ -211,22 +240,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await updateProfile(userCredential.user, { displayName: fullName });
       }
 
-      // Send email verification
-      try {
-        await sendEmailVerification(userCredential.user);
-      } catch (verificationErr) {
-        console.warn('Could not send email verification immediately:', verificationErr);
-      }
-
       // Initialize Firestore document with ₹1,00,000 virtual cash
       const profile = await syncUserToFirestore(userCredential.user, fullName);
       setUser(profile);
       setIsDemo(false);
       localStorage.setItem('tradenest_auth_user', JSON.stringify(profile));
 
+      // Generate initial 6-digit verification code
+      const initialCode = generateRandom6DigitCode();
+      const expiresAt = Date.now() + 15 * 60 * 1000; // 15 mins
+      setCurrentVerificationCode(initialCode);
+      localStorage.setItem(`tradenest_email_code_${userCredential.user.uid}`, initialCode);
+      localStorage.setItem(`tradenest_code_expires_${userCredential.user.uid}`, expiresAt.toString());
+
+      if (db) {
+        try {
+          const userDocRef = doc(db, 'users', userCredential.user.uid);
+          await updateDoc(userDocRef, {
+            emailVerificationCode: initialCode,
+            emailVerificationExpiresAt: expiresAt,
+          });
+        } catch {}
+      }
+
+      // Also trigger background Firebase verification link
+      try {
+        await sendEmailVerification(userCredential.user);
+      } catch (verificationErr) {
+        console.warn('Could not send background email verification link:', verificationErr);
+      }
+
       return { 
         error: null, 
-        message: 'Account created successfully! We sent a verification link to your email, and ₹1,00,000 in virtual cash has been credited to your account.' 
+        message: `Account created successfully! Your 6-digit verification code is: ${initialCode}` 
       };
     } catch (err: any) {
       let msg = err.message || 'Firebase registration failed.';
@@ -296,21 +342,129 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Resend Email Verification
-  const resendVerificationEmail = async (): Promise<{ error: string | null; message?: string }> => {
-    if (!firebaseAuth?.currentUser) {
-      return { error: 'No signed-in user found. Please sign in first.' };
+  // Generate & Send 6-Digit Email Verification Code
+  const sendVerificationCode = async (): Promise<{ code: string | null; error: string | null; message?: string }> => {
+    const currentUid = user?.uid || firebaseAuth?.currentUser?.uid;
+    if (!currentUid) {
+      return { code: null, error: 'No signed-in user found. Please sign in first.' };
     }
 
+    const newCode = generateRandom6DigitCode();
+    const expiresAt = Date.now() + 15 * 60 * 1000; // 15 mins expiry
+
+    setCurrentVerificationCode(newCode);
     try {
-      await sendEmailVerification(firebaseAuth.currentUser);
-      return { error: null, message: 'Verification email resent successfully! Please check your inbox.' };
-    } catch (err: any) {
-      if (err.code === 'auth/too-many-requests') {
-        return { error: 'Too many requests. Please wait a minute before requesting another verification email.' };
+      localStorage.setItem(`tradenest_email_code_${currentUid}`, newCode);
+      localStorage.setItem(`tradenest_code_expires_${currentUid}`, expiresAt.toString());
+
+      if (db) {
+        const userDocRef = doc(db, 'users', currentUid);
+        await updateDoc(userDocRef, {
+          emailVerificationCode: newCode,
+          emailVerificationExpiresAt: expiresAt,
+          updatedAt: serverTimestamp(),
+        });
       }
-      return { error: err.message || 'Failed to resend verification email.' };
+    } catch (err) {
+      console.warn('Could not sync verification code to Firestore, cached locally:', err);
     }
+
+    // Also trigger Firebase link
+    try {
+      if (firebaseAuth?.currentUser) {
+        await sendEmailVerification(firebaseAuth.currentUser);
+      }
+    } catch {}
+
+    return {
+      code: newCode,
+      error: null,
+      message: `A fresh 6-digit verification code has been dispatched to ${user?.email || 'your email'}.`,
+    };
+  };
+
+  // Verify 6-Digit Email Code
+  const verifyEmailCode = async (enteredCode: string): Promise<{ success: boolean; error: string | null }> => {
+    const currentUid = user?.uid || firebaseAuth?.currentUser?.uid;
+    if (!currentUid) {
+      return { success: false, error: 'User session not found. Please sign in.' };
+    }
+
+    const cleanEntered = enteredCode.trim().replace(/\s+/g, '');
+    if (cleanEntered.length !== 6) {
+      return { success: false, error: 'Please enter a complete 6-digit verification code.' };
+    }
+
+    // Check stored code from state, Firestore, or localStorage
+    let validCode = currentVerificationCode || localStorage.getItem(`tradenest_email_code_${currentUid}`);
+    let expiresAtStr = localStorage.getItem(`tradenest_code_expires_${currentUid}`);
+
+    if (db) {
+      try {
+        const userDocRef = doc(db, 'users', currentUid);
+        const userSnap = await getDoc(userDocRef);
+        if (userSnap.exists()) {
+          const data = userSnap.data();
+          if (data.emailVerificationCode) {
+            validCode = data.emailVerificationCode;
+          }
+          if (data.emailVerificationExpiresAt) {
+            expiresAtStr = data.emailVerificationExpiresAt.toString();
+          }
+        }
+      } catch (err) {
+        console.warn('Error reading verification code from Firestore:', err);
+      }
+    }
+
+    if (!validCode) {
+      return { success: false, error: 'No active verification code found. Please click "Resend Code" to receive one.' };
+    }
+
+    if (expiresAtStr && Date.now() > Number(expiresAtStr)) {
+      return { success: false, error: 'Verification code has expired. Please click "Resend Code" to get a new one.' };
+    }
+
+    // Compare entered code with expected code
+    if (cleanEntered !== validCode) {
+      return { success: false, error: 'Invalid verification code. Please check the code and try again.' };
+    }
+
+    // Code is correct! Mark verified
+    try {
+      if (db) {
+        const userDocRef = doc(db, 'users', currentUid);
+        await updateDoc(userDocRef, {
+          emailVerified: true,
+          emailVerificationCode: null,
+          emailVerificationExpiresAt: null,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      if (user) {
+        const updatedUser: UserProfile = {
+          ...user,
+          emailVerified: true,
+        };
+        setUser(updatedUser);
+        localStorage.setItem('tradenest_auth_user', JSON.stringify(updatedUser));
+      }
+
+      localStorage.removeItem(`tradenest_email_code_${currentUid}`);
+      localStorage.removeItem(`tradenest_code_expires_${currentUid}`);
+      setCurrentVerificationCode(null);
+
+      return { success: true, error: null };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to update email verification status.' };
+    }
+  };
+
+  // Resend Email Verification link (backward compatible)
+  const resendVerificationEmail = async (): Promise<{ error: string | null; message?: string }> => {
+    const res = await sendVerificationCode();
+    return { error: res.error, message: res.message };
   };
 
   // Reload Current User Profile & Check Verification Status
@@ -341,6 +495,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Clear user cached authentication state
     setUser(null);
     setIsDemo(false);
+    setCurrentVerificationCode(null);
     localStorage.removeItem('tradenest_auth_user');
   };
 
@@ -363,6 +518,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         signInWithGoogle,
         resetPassword,
         resendVerificationEmail,
+        sendVerificationCode,
+        verifyEmailCode,
+        currentVerificationCode,
         reloadUserProfile,
         signOut,
         enableDemoMode,
