@@ -4,6 +4,9 @@
       "emailPassword": true
     }
   },
+  "firestore": {
+    "rules": "firestore.rules"
+  },
   "hosting": {
     "site": "tradenest-1cc6b",
     "public": "dist",

@@ -21,8 +21,18 @@ import {
   calculateRealizedPnL, 
   calculateUnrealizedPnL 
 } from '../utils/math';
+import { 
+  db, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  updateDoc, 
+  collection, 
+  getDocs,
+  serverTimestamp 
+} from './firebaseClient';
 
-const INITIAL_CASH = 100000; // ₹1,00,000
+const INITIAL_CASH = 100000; // ₹1,00,000 initial virtual cash
 
 interface StoredHolding {
   symbol: string;
@@ -37,7 +47,7 @@ interface StoredAccount {
   realizedPnl: number;
 }
 
-export class DemoDataProvider implements ITradingDataProvider {
+export class FirestoreTradingProvider implements ITradingDataProvider {
   private userId: string;
   private storagePrefix: string;
   private stocks: Map<string, StockQuote> = new Map();
@@ -55,30 +65,29 @@ export class DemoDataProvider implements ITradingDataProvider {
   private tickSubscribers: Set<(stocks: StockQuote[], indices: IndexOverview[], executedOrders?: Order[]) => void> = new Set();
   private intervalId: number | null = null;
 
+  constructor(userId: string) {
+    this.userId = userId;
+    this.storagePrefix = `tradenest_user_${userId}_`;
+    this.initializeData();
+    this.startSimulationEngine();
+    this.syncFromFirestore();
+  }
+
   public destroy(): void {
     if (this.intervalId !== null) {
       window.clearInterval(this.intervalId);
       this.intervalId = null;
     }
-  }
-
-  constructor(userId: string = 'demo') {
-    this.userId = userId;
-    this.storagePrefix = userId === 'demo' ? 'tradenest_demo_' : `tradenest_user_${userId}_`;
-    this.initializeData();
-    this.startSimulationEngine();
+    this.tickSubscribers.clear();
   }
 
   private initializeData(): void {
-    // 1. Initialize stocks
     INITIAL_STOCKS.forEach(stock => {
       this.stocks.set(stock.symbol, { ...stock });
     });
-
-    // 2. Initialize indices
     this.indices = INITIAL_INDICES.map(idx => ({ ...idx }));
 
-    // 3. Load persisted state from localStorage
+    // Load from user-scoped localStorage as initial cache
     try {
       const storedAccount = localStorage.getItem(this.storagePrefix + 'account');
       if (storedAccount) {
@@ -106,16 +115,88 @@ export class DemoDataProvider implements ITradingDataProvider {
         const parsed: string[] = JSON.parse(storedWatchlist);
         this.watchlist = new Set(parsed);
       } else {
-        // Default popular stocks in watchlist
         this.watchlist = new Set(['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'TATAMOTORS']);
-        this.saveWatchlist();
+        this.saveLocalWatchlist();
       }
     } catch (e) {
-      console.warn('Failed to load demo data from localStorage, using initial defaults', e);
+      console.warn('Failed to load user local cache', e);
     }
   }
 
-  private saveAccount(): void {
+  private async syncFromFirestore(): Promise<void> {
+    if (!db || !this.userId) return;
+
+    try {
+      // 1. Fetch user doc for balance and watchlist
+      const userDocRef = doc(db, 'users', this.userId);
+      const userSnap = await getDoc(userDocRef);
+
+      if (userSnap.exists()) {
+        const data = userSnap.data();
+        if (typeof data.virtualCash === 'number') {
+          this.account.virtualCash = data.virtualCash;
+          this.account.reservedCash = data.reservedCash ?? 0;
+          this.account.realizedPnl = data.realizedPnl ?? 0;
+          this.saveLocalAccount();
+        } else {
+          // Initialize balance in Firestore if missing
+          await setDoc(userDocRef, {
+            virtualCash: INITIAL_CASH,
+            reservedCash: 0,
+            realizedPnl: 0,
+            updatedAt: serverTimestamp(),
+          }, { merge: true });
+        }
+
+        if (Array.isArray(data.watchlist)) {
+          this.watchlist = new Set(data.watchlist);
+          this.saveLocalWatchlist();
+        }
+      }
+
+      // 2. Fetch Holdings subcollection
+      const holdingsCol = collection(db, 'users', this.userId, 'holdings');
+      const holdingsSnap = await getDocs(holdingsCol);
+      if (!holdingsSnap.empty) {
+        this.holdings.clear();
+        holdingsSnap.forEach(d => {
+          const h = d.data() as StoredHolding;
+          this.holdings.set(h.symbol, h);
+        });
+        this.saveLocalHoldings();
+      }
+
+      // 3. Fetch Orders subcollection
+      const ordersCol = collection(db, 'users', this.userId, 'orders');
+      const ordersSnap = await getDocs(ordersCol);
+      if (!ordersSnap.empty) {
+        const loadedOrders: Order[] = [];
+        ordersSnap.forEach(d => {
+          loadedOrders.push(d.data() as Order);
+        });
+        loadedOrders.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        this.orders = loadedOrders;
+        this.saveLocalOrders();
+      }
+
+      // 4. Fetch Transactions subcollection
+      const txnCol = collection(db, 'users', this.userId, 'transactions');
+      const txnSnap = await getDocs(txnCol);
+      if (!txnSnap.empty) {
+        const loadedTxns: Transaction[] = [];
+        txnSnap.forEach(d => {
+          loadedTxns.push(d.data() as Transaction);
+        });
+        loadedTxns.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        this.transactions = loadedTxns;
+        this.saveLocalTransactions();
+      }
+    } catch (e) {
+      console.warn('Could not sync user data with Cloud Firestore (using local cached state):', e);
+    }
+  }
+
+  private saveLocalAccount(): void {
     try {
       localStorage.setItem(this.storagePrefix + 'account', JSON.stringify(this.account));
     } catch (e) {
@@ -123,7 +204,7 @@ export class DemoDataProvider implements ITradingDataProvider {
     }
   }
 
-  private saveHoldings(): void {
+  private saveLocalHoldings(): void {
     try {
       const list = Array.from(this.holdings.values());
       localStorage.setItem(this.storagePrefix + 'holdings', JSON.stringify(list));
@@ -132,7 +213,7 @@ export class DemoDataProvider implements ITradingDataProvider {
     }
   }
 
-  private saveOrders(): void {
+  private saveLocalOrders(): void {
     try {
       localStorage.setItem(this.storagePrefix + 'orders', JSON.stringify(this.orders));
     } catch (e) {
@@ -140,7 +221,7 @@ export class DemoDataProvider implements ITradingDataProvider {
     }
   }
 
-  private saveTransactions(): void {
+  private saveLocalTransactions(): void {
     try {
       localStorage.setItem(this.storagePrefix + 'transactions', JSON.stringify(this.transactions));
     } catch (e) {
@@ -148,7 +229,7 @@ export class DemoDataProvider implements ITradingDataProvider {
     }
   }
 
-  private saveWatchlist(): void {
+  private saveLocalWatchlist(): void {
     try {
       localStorage.setItem(this.storagePrefix + 'watchlist', JSON.stringify(Array.from(this.watchlist)));
     } catch (e) {
@@ -156,13 +237,74 @@ export class DemoDataProvider implements ITradingDataProvider {
     }
   }
 
-  // --- Start Real-time Simulation Engine ---
+  private async persistAccountCloud(): Promise<void> {
+    if (!db || !this.userId) return;
+    try {
+      const userDocRef = doc(db, 'users', this.userId);
+      await updateDoc(userDocRef, {
+        virtualCash: this.account.virtualCash,
+        reservedCash: this.account.reservedCash,
+        realizedPnl: this.account.realizedPnl,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn('Failed to update account in Firestore:', e);
+    }
+  }
+
+  private async persistHoldingCloud(symbol: string): Promise<void> {
+    if (!db || !this.userId) return;
+    try {
+      const holding = this.holdings.get(symbol);
+      const holdingDocRef = doc(db, 'users', this.userId, 'holdings', symbol);
+      if (holding && holding.quantity > 0) {
+        await setDoc(holdingDocRef, holding, { merge: true });
+      } else {
+        await setDoc(holdingDocRef, { symbol, quantity: 0, reservedQuantity: 0, averageBuyPrice: 0 }, { merge: true });
+      }
+    } catch (e) {
+      console.warn('Failed to update holding in Firestore:', e);
+    }
+  }
+
+  private async persistOrderCloud(order: Order): Promise<void> {
+    if (!db || !this.userId) return;
+    try {
+      const orderDocRef = doc(db, 'users', this.userId, 'orders', order.id);
+      await setDoc(orderDocRef, order);
+    } catch (e) {
+      console.warn('Failed to save order in Firestore:', e);
+    }
+  }
+
+  private async persistTransactionCloud(txn: Transaction): Promise<void> {
+    if (!db || !this.userId) return;
+    try {
+      const txnDocRef = doc(db, 'users', this.userId, 'transactions', txn.id);
+      await setDoc(txnDocRef, txn);
+    } catch (e) {
+      console.warn('Failed to save transaction in Firestore:', e);
+    }
+  }
+
+  private async persistWatchlistCloud(): Promise<void> {
+    if (!db || !this.userId) return;
+    try {
+      const userDocRef = doc(db, 'users', this.userId);
+      await updateDoc(userDocRef, {
+        watchlist: Array.from(this.watchlist),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn('Failed to save watchlist in Firestore:', e);
+    }
+  }
+
+  // --- Real-time Simulation Engine ---
   private startSimulationEngine(): void {
     if (typeof window === 'undefined') return;
 
-    // Tick every 3.5 seconds
     this.intervalId = window.setInterval(() => {
-      // Pick 4 to 8 random stocks to update per tick for realistic activity
       const stockKeys = Array.from(this.stocks.keys());
       const shuffled = stockKeys.sort(() => 0.5 - Math.random());
       const selected = shuffled.slice(0, Math.floor(Math.random() * 5) + 4);
@@ -175,21 +317,15 @@ export class DemoDataProvider implements ITradingDataProvider {
         }
       });
 
-      // Update indices
       this.indices = this.indices.map(idx => simulateIndexTick(idx));
 
-      // Match pending limit orders against updated market prices!
       const executedOrders = this.checkAndMatchLimitOrders();
 
-      // Notify subscribers
       const allStocks = Array.from(this.stocks.values());
       this.tickSubscribers.forEach(cb => cb(allStocks, this.indices, executedOrders));
     }, 3500);
   }
 
-  /**
-   * Matches pending limit orders when prices cross thresholds
-   */
   private checkAndMatchLimitOrders(): Order[] {
     const executed: Order[] = [];
     let stateChanged = false;
@@ -205,17 +341,14 @@ export class DemoDataProvider implements ITradingDataProvider {
 
       const currentPrice = stock.price;
 
-      // BUY LIMIT: executes when current price <= limit price
       if (order.side === 'BUY' && currentPrice <= order.limitPrice) {
         const execPrice = currentPrice;
         const actualCost = round2(order.quantity * execPrice);
         const reservedCost = round2(order.quantity * order.limitPrice);
 
-        // Deduct actual cost from virtualCash, release reservedCash
         this.account.virtualCash = round2(this.account.virtualCash - actualCost);
         this.account.reservedCash = Math.max(0, round2(this.account.reservedCash - reservedCost));
 
-        // Update Holdings
         const existing = this.holdings.get(order.symbol);
         if (existing) {
           const newAvg = calculateWeightedAverage(
@@ -236,13 +369,11 @@ export class DemoDataProvider implements ITradingDataProvider {
           });
         }
 
-        // Update order status
         order.status = 'EXECUTED';
         order.executionPrice = execPrice;
         order.totalAmount = actualCost;
         order.executedAt = new Date().toISOString();
 
-        // Create transaction record
         const transaction: Transaction = {
           id: 'txn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
           orderId: order.id,
@@ -252,93 +383,92 @@ export class DemoDataProvider implements ITradingDataProvider {
           quantity: order.quantity,
           price: execPrice,
           totalValue: actualCost,
-          createdAt: new Date().toISOString(),
+          createdAt: order.executedAt,
         };
         this.transactions.unshift(transaction);
-
         executed.push(order);
         stateChanged = true;
-      }
 
-      // SELL LIMIT: executes when current price >= limit price
-      else if (order.side === 'SELL' && currentPrice >= order.limitPrice) {
+        this.persistOrderCloud(order);
+        this.persistTransactionCloud(transaction);
+        this.persistHoldingCloud(order.symbol);
+      } else if (order.side === 'SELL' && currentPrice >= order.limitPrice) {
         const execPrice = currentPrice;
-        const totalSaleValue = round2(order.quantity * execPrice);
+        const totalCredit = round2(order.quantity * execPrice);
 
         const holding = this.holdings.get(order.symbol);
         if (holding) {
-          const realizedPnl = calculateRealizedPnL(order.quantity, execPrice, holding.averageBuyPrice);
-          this.account.realizedPnl = round2(this.account.realizedPnl + realizedPnl);
-          this.account.virtualCash = round2(this.account.virtualCash + totalSaleValue);
-
-          holding.quantity -= order.quantity;
           holding.reservedQuantity = Math.max(0, holding.reservedQuantity - order.quantity);
+          const pnl = calculateRealizedPnL(holding.quantity, execPrice, holding.averageBuyPrice);
+          this.account.realizedPnl = round2(this.account.realizedPnl + pnl);
 
           if (holding.quantity <= 0) {
             this.holdings.delete(order.symbol);
           } else {
             this.holdings.set(order.symbol, holding);
           }
-
-          // Update order status
-          order.status = 'EXECUTED';
-          order.executionPrice = execPrice;
-          order.totalAmount = totalSaleValue;
-          order.executedAt = new Date().toISOString();
-
-          // Create transaction record
-          const transaction: Transaction = {
-            id: 'txn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-            orderId: order.id,
-            symbol: order.symbol,
-            companyName: order.companyName,
-            side: 'SELL',
-            quantity: order.quantity,
-            price: execPrice,
-            totalValue: totalSaleValue,
-            realizedPnl,
-            createdAt: new Date().toISOString(),
-          };
-          this.transactions.unshift(transaction);
-
-          executed.push(order);
-          stateChanged = true;
         }
+
+        this.account.virtualCash = round2(this.account.virtualCash + totalCredit);
+
+        order.status = 'EXECUTED';
+        order.executionPrice = execPrice;
+        order.totalAmount = totalCredit;
+        order.executedAt = new Date().toISOString();
+
+        const transaction: Transaction = {
+          id: 'txn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+          orderId: order.id,
+          symbol: order.symbol,
+          companyName: order.companyName,
+          side: 'SELL',
+          quantity: order.quantity,
+          price: execPrice,
+          totalValue: totalCredit,
+          createdAt: order.executedAt,
+        };
+        this.transactions.unshift(transaction);
+        executed.push(order);
+        stateChanged = true;
+
+        this.persistOrderCloud(order);
+        this.persistTransactionCloud(transaction);
+        this.persistHoldingCloud(order.symbol);
       }
     }
 
     if (stateChanged) {
-      this.saveAccount();
-      this.saveHoldings();
-      this.saveOrders();
-      this.saveTransactions();
+      this.saveLocalAccount();
+      this.saveLocalHoldings();
+      this.saveLocalOrders();
+      this.saveLocalTransactions();
+      this.persistAccountCloud();
     }
 
     return executed;
   }
 
-  // --- Public Interface Implementations ---
+  // --- ITradingDataProvider Implementation ---
 
-  async getStocks(): Promise<StockQuote[]> {
+  public async getStocks(): Promise<StockQuote[]> {
     return Array.from(this.stocks.values());
   }
 
-  async getStock(symbol: string): Promise<StockQuote | null> {
-    const stock = this.stocks.get(symbol.toUpperCase());
-    return stock ? { ...stock } : null;
+  public async getStock(symbol: string): Promise<StockQuote | null> {
+    return this.stocks.get(symbol.toUpperCase()) || null;
   }
 
-  async getIndices(): Promise<IndexOverview[]> {
+  public async getIndices(): Promise<IndexOverview[]> {
     return [...this.indices];
   }
 
-  async getHistoricalData(symbol: string, timeframe: TimeFrame): Promise<PricePoint[]> {
+  public async getHistoricalData(symbol: string, timeframe: TimeFrame): Promise<PricePoint[]> {
     const stock = this.stocks.get(symbol.toUpperCase());
     if (!stock) return [];
     return generateConsistentHistory(stock, timeframe);
   }
 
-  async getAccountSummary(): Promise<AccountSummary> {
+  public async getAccountSummary(): Promise<AccountSummary> {
     const holdings = await this.getHoldings();
     const portfolioMarketValue = round2(holdings.reduce((sum, h) => sum + h.currentValue, 0));
     const totalInvested = round2(holdings.reduce((sum, h) => sum + h.investedValue, 0));
@@ -361,11 +491,10 @@ export class DemoDataProvider implements ITradingDataProvider {
     };
   }
 
-  async getHoldings(): Promise<Holding[]> {
+  public async getHoldings(): Promise<Holding[]> {
     const result: Holding[] = [];
     let totalPortfolioValue = 0;
 
-    // First calculate current values
     const list: { holding: StoredHolding; stock: StockQuote; currentValue: number; investedValue: number }[] = [];
 
     this.holdings.forEach((stored, symbol) => {
@@ -407,21 +536,19 @@ export class DemoDataProvider implements ITradingDataProvider {
     return result.sort((a, b) => b.currentValue - a.currentValue);
   }
 
-  async getOrders(): Promise<Order[]> {
+  public async getOrders(): Promise<Order[]> {
     return [...this.orders];
   }
 
-  async getTransactions(): Promise<Transaction[]> {
+  public async getTransactions(): Promise<Transaction[]> {
     return [...this.transactions];
   }
 
-  /**
-   * Places an order atomically with full validation and reservation logic
-   */
-  async placeOrder(request: OrderRequest): Promise<OrderResult> {
+  public async placeOrder(request: OrderRequest): Promise<OrderResult> {
     if (this.isProcessing) {
-      return { success: false, error: 'A transaction is currently processing. Please wait.' };
+      return { success: false, error: 'Another order is currently processing. Please wait.' };
     }
+
     this.isProcessing = true;
 
     try {
@@ -430,117 +557,33 @@ export class DemoDataProvider implements ITradingDataProvider {
         return { success: false, error: `Stock ${request.symbol} not found.` };
       }
 
-      // Quantity validation
-      if (!Number.isInteger(request.quantity) || request.quantity <= 0) {
-        return { success: false, error: 'Order quantity must be a positive whole number.' };
+      const qty = Math.floor(request.quantity);
+      if (qty <= 0) {
+        return { success: false, error: 'Quantity must be at least 1 share.' };
       }
 
-      // Limit price validation
-      if (request.orderType === 'LIMIT') {
-        if (!request.limitPrice || request.limitPrice <= 0) {
-          return { success: false, error: 'Please enter a valid limit price.' };
-        }
+      const currentPrice = stock.price;
+      const isLimit = request.orderType === 'LIMIT';
+      const limitPrice = isLimit ? Number(request.limitPrice) : undefined;
+
+      if (isLimit && (!limitPrice || limitPrice <= 0)) {
+        return { success: false, error: 'Please enter a valid limit price.' };
       }
 
-      const orderPrice = request.orderType === 'LIMIT' ? request.limitPrice! : stock.price;
-      const totalAmount = round2(request.quantity * orderPrice);
-      const availableCash = round2(this.account.virtualCash - this.account.reservedCash);
+      const effectivePrice = isLimit ? limitPrice! : currentPrice;
+      const estimatedTotal = round2(qty * effectivePrice);
 
-      // --- BUY ORDER VALIDATION ---
       if (request.side === 'BUY') {
-        if (totalAmount > availableCash) {
+        if (this.account.virtualCash < estimatedTotal) {
           return {
             success: false,
-            error: `Insufficient virtual cash. Available: ₹${availableCash.toLocaleString('en-IN')}, Required: ₹${totalAmount.toLocaleString('en-IN')}.`,
+            error: `Insufficient virtual cash. Required: ₹${estimatedTotal}, Available: ₹${this.account.virtualCash}.`,
           };
         }
 
-        // Market Buy executes immediately
-        if (request.orderType === 'MARKET') {
-          this.account.virtualCash = round2(this.account.virtualCash - totalAmount);
-
-          const existing = this.holdings.get(stock.symbol);
-          if (existing) {
-            const newAvg = calculateWeightedAverage(
-              existing.quantity,
-              existing.averageBuyPrice,
-              request.quantity,
-              orderPrice
-            );
-            existing.quantity += request.quantity;
-            existing.averageBuyPrice = newAvg;
-            this.holdings.set(stock.symbol, existing);
-          } else {
-            this.holdings.set(stock.symbol, {
-              symbol: stock.symbol,
-              quantity: request.quantity,
-              reservedQuantity: 0,
-              averageBuyPrice: orderPrice,
-            });
-          }
-
-          const order: Order = {
-            id: 'ord_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-            userId: this.userId,
-            symbol: stock.symbol,
-            companyName: stock.name,
-            side: 'BUY',
-            orderType: 'MARKET',
-            quantity: request.quantity,
-            executionPrice: orderPrice,
-            totalAmount,
-            status: 'EXECUTED',
-            createdAt: new Date().toISOString(),
-            executedAt: new Date().toISOString(),
-          };
-          this.orders.unshift(order);
-
-          const transaction: Transaction = {
-            id: 'txn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-            orderId: order.id,
-            symbol: stock.symbol,
-            companyName: stock.name,
-            side: 'BUY',
-            quantity: request.quantity,
-            price: orderPrice,
-            totalValue: totalAmount,
-            createdAt: new Date().toISOString(),
-          };
-          this.transactions.unshift(transaction);
-
-          this.saveAccount();
-          this.saveHoldings();
-          this.saveOrders();
-          this.saveTransactions();
-
-          return { success: true, order, message: `Successfully bought ${request.quantity} shares of ${stock.symbol} at ₹${orderPrice}.` };
-        }
-
-        // Limit Buy: Check if price satisfies condition immediately or place pending order
-        if (stock.price <= orderPrice) {
-          // Immediately fills at market price
-          const execCost = round2(request.quantity * stock.price);
-          this.account.virtualCash = round2(this.account.virtualCash - execCost);
-
-          const existing = this.holdings.get(stock.symbol);
-          if (existing) {
-            const newAvg = calculateWeightedAverage(
-              existing.quantity,
-              existing.averageBuyPrice,
-              request.quantity,
-              stock.price
-            );
-            existing.quantity += request.quantity;
-            existing.averageBuyPrice = newAvg;
-            this.holdings.set(stock.symbol, existing);
-          } else {
-            this.holdings.set(stock.symbol, {
-              symbol: stock.symbol,
-              quantity: request.quantity,
-              reservedQuantity: 0,
-              averageBuyPrice: stock.price,
-            });
-          }
+        if (isLimit) {
+          this.account.virtualCash = round2(this.account.virtualCash - estimatedTotal);
+          this.account.reservedCash = round2(this.account.reservedCash + estimatedTotal);
 
           const order: Order = {
             id: 'ord_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
@@ -549,186 +592,106 @@ export class DemoDataProvider implements ITradingDataProvider {
             companyName: stock.name,
             side: 'BUY',
             orderType: 'LIMIT',
-            quantity: request.quantity,
-            limitPrice: orderPrice,
-            executionPrice: stock.price,
-            totalAmount: execCost,
-            status: 'EXECUTED',
-            createdAt: new Date().toISOString(),
-            executedAt: new Date().toISOString(),
-          };
-          this.orders.unshift(order);
-
-          const transaction: Transaction = {
-            id: 'txn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-            orderId: order.id,
-            symbol: stock.symbol,
-            companyName: stock.name,
-            side: 'BUY',
-            quantity: request.quantity,
-            price: stock.price,
-            totalValue: execCost,
-            createdAt: new Date().toISOString(),
-          };
-          this.transactions.unshift(transaction);
-
-          this.saveAccount();
-          this.saveHoldings();
-          this.saveOrders();
-          this.saveTransactions();
-
-          return { success: true, order, message: `Limit order filled immediately at ₹${stock.price} (below limit ₹${orderPrice}).` };
-        } else {
-          // Reserve cash and record PENDING order
-          this.account.reservedCash = round2(this.account.reservedCash + totalAmount);
-
-          const order: Order = {
-            id: 'ord_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-            userId: this.userId,
-            symbol: stock.symbol,
-            companyName: stock.name,
-            side: 'BUY',
-            orderType: 'LIMIT',
-            quantity: request.quantity,
-            limitPrice: orderPrice,
-            totalAmount,
+            quantity: qty,
+            limitPrice,
+            totalAmount: estimatedTotal,
             status: 'PENDING',
             createdAt: new Date().toISOString(),
           };
+
           this.orders.unshift(order);
+          this.saveLocalAccount();
+          this.saveLocalOrders();
+          this.persistAccountCloud();
+          this.persistOrderCloud(order);
 
-          this.saveAccount();
-          this.saveOrders();
+          return {
+            success: true,
+            order,
+            message: `Limit Buy placed for ${qty}x ${stock.symbol} at ₹${limitPrice}. ₹${estimatedTotal} reserved.`,
+          };
+        } else {
+          this.account.virtualCash = round2(this.account.virtualCash - estimatedTotal);
 
-          return { success: true, order, message: `Buy limit order placed for ${request.quantity} shares of ${stock.symbol} at ₹${orderPrice}. Funds reserved.` };
+          const existing = this.holdings.get(stock.symbol);
+          if (existing) {
+            const newAvg = calculateWeightedAverage(
+              existing.quantity,
+              existing.averageBuyPrice,
+              qty,
+              currentPrice
+            );
+            existing.quantity += qty;
+            existing.averageBuyPrice = newAvg;
+            this.holdings.set(stock.symbol, existing);
+          } else {
+            this.holdings.set(stock.symbol, {
+              symbol: stock.symbol,
+              quantity: qty,
+              reservedQuantity: 0,
+              averageBuyPrice: currentPrice,
+            });
+          }
+
+          const order: Order = {
+            id: 'ord_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+            userId: this.userId,
+            symbol: stock.symbol,
+            companyName: stock.name,
+            side: 'BUY',
+            orderType: 'MARKET',
+            quantity: qty,
+            executionPrice: currentPrice,
+            totalAmount: estimatedTotal,
+            status: 'EXECUTED',
+            createdAt: new Date().toISOString(),
+            executedAt: new Date().toISOString(),
+          };
+
+          const transaction: Transaction = {
+            id: 'txn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+            orderId: order.id,
+            symbol: stock.symbol,
+            companyName: stock.name,
+            side: 'BUY',
+            quantity: qty,
+            price: currentPrice,
+            totalValue: estimatedTotal,
+            createdAt: order.executedAt!,
+          };
+
+          this.orders.unshift(order);
+          this.transactions.unshift(transaction);
+          this.saveLocalAccount();
+          this.saveLocalHoldings();
+          this.saveLocalOrders();
+          this.saveLocalTransactions();
+          this.persistAccountCloud();
+          this.persistOrderCloud(order);
+          this.persistTransactionCloud(transaction);
+          this.persistHoldingCloud(stock.symbol);
+
+          return {
+            success: true,
+            order,
+            message: `Successfully bought ${qty} shares of ${stock.symbol} at ₹${currentPrice}!`,
+          };
         }
-      }
-
-      // --- SELL ORDER VALIDATION ---
-      if (request.side === 'SELL') {
+      } else {
+        // SELL
         const holding = this.holdings.get(stock.symbol);
-        const availableQty = holding ? Math.max(0, holding.quantity - holding.reservedQuantity) : 0;
+        const availableShares = holding ? holding.quantity : 0;
 
-        if (availableQty < request.quantity) {
+        if (availableShares < qty) {
           return {
             success: false,
-            error: `Insufficient shares. Sellable holdings: ${availableQty} shares, Requested: ${request.quantity} shares.`,
+            error: `Insufficient shares to sell. Available: ${availableShares} shares, Requested: ${qty}.`,
           };
         }
 
-        // Market Sell executes immediately
-        if (request.orderType === 'MARKET') {
-          const saleValue = round2(request.quantity * stock.price);
-          const realizedPnl = calculateRealizedPnL(request.quantity, stock.price, holding!.averageBuyPrice);
-
-          this.account.virtualCash = round2(this.account.virtualCash + saleValue);
-          this.account.realizedPnl = round2(this.account.realizedPnl + realizedPnl);
-
-          holding!.quantity -= request.quantity;
-          if (holding!.quantity <= 0) {
-            this.holdings.delete(stock.symbol);
-          } else {
-            this.holdings.set(stock.symbol, holding!);
-          }
-
-          const order: Order = {
-            id: 'ord_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-            userId: this.userId,
-            symbol: stock.symbol,
-            companyName: stock.name,
-            side: 'SELL',
-            orderType: 'MARKET',
-            quantity: request.quantity,
-            executionPrice: stock.price,
-            totalAmount: saleValue,
-            status: 'EXECUTED',
-            createdAt: new Date().toISOString(),
-            executedAt: new Date().toISOString(),
-          };
-          this.orders.unshift(order);
-
-          const transaction: Transaction = {
-            id: 'txn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-            orderId: order.id,
-            symbol: stock.symbol,
-            companyName: stock.name,
-            side: 'SELL',
-            quantity: request.quantity,
-            price: stock.price,
-            totalValue: saleValue,
-            realizedPnl,
-            createdAt: new Date().toISOString(),
-          };
-          this.transactions.unshift(transaction);
-
-          this.saveAccount();
-          this.saveHoldings();
-          this.saveOrders();
-          this.saveTransactions();
-
-          return { 
-            success: true, 
-            order, 
-            message: `Successfully sold ${request.quantity} shares of ${stock.symbol} at ₹${stock.price}. Realized P&L: ₹${realizedPnl >= 0 ? '+' : ''}${realizedPnl}.` 
-          };
-        }
-
-        // Limit Sell
-        if (stock.price >= orderPrice) {
-          // Immediately fills at market price
-          const saleValue = round2(request.quantity * stock.price);
-          const realizedPnl = calculateRealizedPnL(request.quantity, stock.price, holding!.averageBuyPrice);
-
-          this.account.virtualCash = round2(this.account.virtualCash + saleValue);
-          this.account.realizedPnl = round2(this.account.realizedPnl + realizedPnl);
-
-          holding!.quantity -= request.quantity;
-          if (holding!.quantity <= 0) {
-            this.holdings.delete(stock.symbol);
-          } else {
-            this.holdings.set(stock.symbol, holding!);
-          }
-
-          const order: Order = {
-            id: 'ord_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-            userId: this.userId,
-            symbol: stock.symbol,
-            companyName: stock.name,
-            side: 'SELL',
-            orderType: 'LIMIT',
-            quantity: request.quantity,
-            limitPrice: orderPrice,
-            executionPrice: stock.price,
-            totalAmount: saleValue,
-            status: 'EXECUTED',
-            createdAt: new Date().toISOString(),
-            executedAt: new Date().toISOString(),
-          };
-          this.orders.unshift(order);
-
-          const transaction: Transaction = {
-            id: 'txn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-            orderId: order.id,
-            symbol: stock.symbol,
-            companyName: stock.name,
-            side: 'SELL',
-            quantity: request.quantity,
-            price: stock.price,
-            totalValue: saleValue,
-            realizedPnl,
-            createdAt: new Date().toISOString(),
-          };
-          this.transactions.unshift(transaction);
-
-          this.saveAccount();
-          this.saveHoldings();
-          this.saveOrders();
-          this.saveTransactions();
-
-          return { success: true, order, message: `Sell limit order filled immediately at ₹${stock.price}.` };
-        } else {
-          // Reserve shares and record PENDING order
-          holding!.reservedQuantity += request.quantity;
+        if (isLimit) {
+          holding!.quantity -= qty;
+          holding!.reservedQuantity += qty;
           this.holdings.set(stock.symbol, holding!);
 
           const order: Order = {
@@ -738,75 +701,136 @@ export class DemoDataProvider implements ITradingDataProvider {
             companyName: stock.name,
             side: 'SELL',
             orderType: 'LIMIT',
-            quantity: request.quantity,
-            limitPrice: orderPrice,
-            totalAmount,
+            quantity: qty,
+            limitPrice,
+            totalAmount: estimatedTotal,
             status: 'PENDING',
             createdAt: new Date().toISOString(),
           };
+
           this.orders.unshift(order);
+          this.saveLocalHoldings();
+          this.saveLocalOrders();
+          this.persistOrderCloud(order);
+          this.persistHoldingCloud(stock.symbol);
 
-          this.saveHoldings();
-          this.saveOrders();
+          return {
+            success: true,
+            order,
+            message: `Limit Sell placed for ${qty}x ${stock.symbol} at ₹${limitPrice}. Shares reserved.`,
+          };
+        } else {
+          holding!.quantity -= qty;
+          const pnl = calculateRealizedPnL(qty, currentPrice, holding!.averageBuyPrice);
+          this.account.realizedPnl = round2(this.account.realizedPnl + pnl);
+          this.account.virtualCash = round2(this.account.virtualCash + estimatedTotal);
 
-          return { success: true, order, message: `Sell limit order placed for ${request.quantity} shares of ${stock.symbol} at ₹${orderPrice}. Shares reserved.` };
+          if (holding!.quantity <= 0 && holding!.reservedQuantity <= 0) {
+            this.holdings.delete(stock.symbol);
+          } else {
+            this.holdings.set(stock.symbol, holding!);
+          }
+
+          const order: Order = {
+            id: 'ord_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+            userId: this.userId,
+            symbol: stock.symbol,
+            companyName: stock.name,
+            side: 'SELL',
+            orderType: 'MARKET',
+            quantity: qty,
+            executionPrice: currentPrice,
+            totalAmount: estimatedTotal,
+            status: 'EXECUTED',
+            createdAt: new Date().toISOString(),
+            executedAt: new Date().toISOString(),
+          };
+
+          const transaction: Transaction = {
+            id: 'txn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+            orderId: order.id,
+            symbol: stock.symbol,
+            companyName: stock.name,
+            side: 'SELL',
+            quantity: qty,
+            price: currentPrice,
+            totalValue: estimatedTotal,
+            realizedPnl: pnl,
+            createdAt: order.executedAt!,
+          };
+
+          this.orders.unshift(order);
+          this.transactions.unshift(transaction);
+          this.saveLocalAccount();
+          this.saveLocalHoldings();
+          this.saveLocalOrders();
+          this.saveLocalTransactions();
+          this.persistAccountCloud();
+          this.persistOrderCloud(order);
+          this.persistTransactionCloud(transaction);
+          this.persistHoldingCloud(stock.symbol);
+
+          return {
+            success: true,
+            order,
+            message: `Successfully sold ${qty} shares of ${stock.symbol} at ₹${currentPrice}!`,
+          };
         }
       }
-
-      return { success: false, error: 'Invalid order side.' };
     } finally {
       this.isProcessing = false;
     }
   }
 
-  /**
-   * Cancels a pending order and releases reserved cash/shares
-   */
-  async cancelOrder(orderId: string): Promise<boolean> {
-    const order = this.orders.find(o => o.id === orderId);
-    if (!order || order.status !== 'PENDING') {
-      return false;
-    }
+  public async cancelOrder(orderId: string): Promise<boolean> {
+    const orderIndex = this.orders.findIndex(o => o.id === orderId);
+    if (orderIndex === -1) return false;
 
-    if (order.side === 'BUY' && order.limitPrice) {
-      const reserved = round2(order.quantity * order.limitPrice);
-      this.account.reservedCash = Math.max(0, round2(this.account.reservedCash - reserved));
-      this.saveAccount();
-    } else if (order.side === 'SELL') {
+    const order = this.orders[orderIndex];
+    if (order.status !== 'PENDING') return false;
+
+    if (order.side === 'BUY') {
+      const reservedCost = round2(order.quantity * (order.limitPrice || 0));
+      this.account.reservedCash = Math.max(0, round2(this.account.reservedCash - reservedCost));
+      this.account.virtualCash = round2(this.account.virtualCash + reservedCost);
+    } else {
       const holding = this.holdings.get(order.symbol);
       if (holding) {
         holding.reservedQuantity = Math.max(0, holding.reservedQuantity - order.quantity);
+        holding.quantity += order.quantity;
         this.holdings.set(order.symbol, holding);
-        this.saveHoldings();
       }
     }
 
     order.status = 'CANCELLED';
     order.cancelledAt = new Date().toISOString();
-    this.saveOrders();
+    this.saveLocalAccount();
+    this.saveLocalHoldings();
+    this.saveLocalOrders();
+    this.persistAccountCloud();
+    this.persistOrderCloud(order);
+    this.persistHoldingCloud(order.symbol);
 
     return true;
   }
 
-  async getWatchlist(): Promise<string[]> {
+  public async getWatchlist(): Promise<string[]> {
     return Array.from(this.watchlist);
   }
 
-  async toggleWatchlist(symbol: string): Promise<string[]> {
-    const upper = symbol.toUpperCase();
-    if (this.watchlist.has(upper)) {
-      this.watchlist.delete(upper);
+  public async toggleWatchlist(symbol: string): Promise<string[]> {
+    const s = symbol.toUpperCase();
+    if (this.watchlist.has(s)) {
+      this.watchlist.delete(s);
     } else {
-      this.watchlist.add(upper);
+      this.watchlist.add(s);
     }
-    this.saveWatchlist();
+    this.saveLocalWatchlist();
+    this.persistWatchlistCloud();
     return Array.from(this.watchlist);
   }
 
-  /**
-   * Resets demo account to initial ₹1,00,000 cash and clears history
-   */
-  async resetAccount(): Promise<void> {
+  public async resetAccount(): Promise<void> {
     this.account = {
       virtualCash: INITIAL_CASH,
       reservedCash: 0,
@@ -815,16 +839,14 @@ export class DemoDataProvider implements ITradingDataProvider {
     this.holdings.clear();
     this.orders = [];
     this.transactions = [];
-    this.watchlist = new Set(['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'TATAMOTORS']);
-
-    this.saveAccount();
-    this.saveHoldings();
-    this.saveOrders();
-    this.saveTransactions();
-    this.saveWatchlist();
+    this.saveLocalAccount();
+    this.saveLocalHoldings();
+    this.saveLocalOrders();
+    this.saveLocalTransactions();
+    this.persistAccountCloud();
   }
 
-  subscribeMarketTicks(
+  public subscribeMarketTicks(
     callback: (stocks: StockQuote[], indices: IndexOverview[], executedOrders?: Order[]) => void
   ): () => void {
     this.tickSubscribers.add(callback);

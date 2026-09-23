@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { UserProfile, AuthState } from '../types/auth';
 import { 
   auth as firebaseAuth, 
+  db,
   googleProvider,
   isFirebaseConfigured,
   signInWithEmailAndPassword,
@@ -9,30 +10,39 @@ import {
   signInWithPopup,
   firebaseSignOut,
   sendPasswordResetEmail,
+  sendEmailVerification,
   updateProfile,
-  onAuthStateChanged
+  onAuthStateChanged,
+  reload,
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  serverTimestamp,
+  FirebaseUser
 } from '../services/firebaseClient';
-import { supabase, isSupabaseConfigured } from '../services/supabaseClient';
 
 interface AuthContextType extends AuthState {
   signInWithPassword: (email: string, password: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string, fullName: string) => Promise<{ error: string | null; message?: string }>;
   signInWithGoogle: () => Promise<{ error: string | null }>;
   resetPassword: (email: string) => Promise<{ error: string | null; message?: string }>;
+  resendVerificationEmail: () => Promise<{ error: string | null; message?: string }>;
+  reloadUserProfile: () => Promise<void>;
   signOut: () => Promise<void>;
   enableDemoMode: () => void;
   isFirebaseReady: boolean;
-  isSupabaseReady: boolean;
-  authProvider: 'firebase' | 'supabase' | 'demo';
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const DEMO_USER: UserProfile = {
   id: 'demo_user',
+  uid: 'demo_user',
   email: 'demo.trader@tradenest.in',
   fullName: 'Demo Trader',
   isDemo: true,
+  emailVerified: true,
   createdAt: new Date().toISOString(),
 };
 
@@ -44,283 +54,300 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return JSON.parse(savedUser);
       }
     } catch {
-      // fallback
+      // Ignore parse errors
     }
-    return DEMO_USER;
+    return null;
   });
 
   const [loading, setLoading] = useState<boolean>(true);
   const [isDemo, setIsDemo] = useState<boolean>(() => {
-    return user?.isDemo ?? true;
+    return user?.isDemo ?? false;
   });
 
-  // Track which active provider was used
-  const [activeProvider, setActiveProvider] = useState<'firebase' | 'supabase' | 'demo'>(() => {
-    if (isFirebaseConfigured) return 'firebase';
-    if (isSupabaseConfigured) return 'supabase';
-    return 'demo';
-  });
+  // Ensure Firestore user document exists and credit virtual money once
+  const syncUserToFirestore = async (fbUser: FirebaseUser, displayNameFallback?: string): Promise<UserProfile> => {
+    const fullName = fbUser.displayName || displayNameFallback || fbUser.email?.split('@')[0] || 'Trader';
+    const profile: UserProfile = {
+      id: fbUser.uid,
+      uid: fbUser.uid,
+      email: fbUser.email || '',
+      fullName,
+      isDemo: false,
+      avatarUrl: fbUser.photoURL || undefined,
+      photoURL: fbUser.photoURL || undefined,
+      emailVerified: fbUser.emailVerified,
+      createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
+    };
+
+    if (db) {
+      try {
+        const userDocRef = doc(db, 'users', fbUser.uid);
+        const userSnap = await getDoc(userDocRef);
+
+        if (!userSnap.exists()) {
+          // First time registration or Google sign-in: Initialize ₹1,00,000 virtual balance
+          await setDoc(userDocRef, {
+            uid: fbUser.uid,
+            displayName: fullName,
+            email: fbUser.email || '',
+            photoURL: fbUser.photoURL || null,
+            emailVerified: fbUser.emailVerified,
+            virtualCash: 100000,
+            reservedCash: 0,
+            realizedPnl: 0,
+            watchlist: ['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'TATAMOTORS'],
+            createdAt: serverTimestamp(),
+            lastLoginAt: serverTimestamp(),
+          });
+        } else {
+          // Existing profile: NEVER overwrite balance or trades!
+          await updateDoc(userDocRef, {
+            emailVerified: fbUser.emailVerified,
+            photoURL: fbUser.photoURL || null,
+            lastLoginAt: serverTimestamp(),
+          });
+        }
+      } catch (err) {
+        console.warn('Firestore user profile sync error (using local cache):', err);
+      }
+    }
+
+    return profile;
+  };
 
   useEffect(() => {
     let mounted = true;
 
-    // 1. If Firebase is configured, listen to Firebase Auth changes
-    if (isFirebaseConfigured && firebaseAuth) {
-      const unsubscribeFirebase = onAuthStateChanged(firebaseAuth, (fbUser) => {
-        if (!mounted) return;
-        if (fbUser) {
-          const profile: UserProfile = {
-            id: fbUser.uid,
-            email: fbUser.email || '',
-            fullName: fbUser.displayName || fbUser.email?.split('@')[0] || 'Trader',
-            isDemo: false,
-            avatarUrl: fbUser.photoURL || undefined,
-            createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
-          };
-          setUser(profile);
-          setIsDemo(false);
-          setActiveProvider('firebase');
-          localStorage.setItem('tradenest_auth_user', JSON.stringify(profile));
-        } else {
-          // If no logged in user and was using Firebase
-          if (activeProvider === 'firebase') {
-            setUser(DEMO_USER);
-            setIsDemo(true);
-            setActiveProvider('demo');
-            localStorage.setItem('tradenest_auth_user', JSON.stringify(DEMO_USER));
-          }
-        }
-        setLoading(false);
-      });
-
-      return () => {
-        mounted = false;
-        unsubscribeFirebase();
-      };
-    }
-
-    // 2. If Supabase is configured and Firebase is not, listen to Supabase
-    if (isSupabaseConfigured && supabase && !isFirebaseConfigured) {
-      async function checkSupabaseSession() {
-        try {
-          const { data: { session } } = await supabase!.auth.getSession();
-          if (session?.user && mounted) {
-            const profile: UserProfile = {
-              id: session.user.id,
-              email: session.user.email || '',
-              fullName: session.user.user_metadata?.full_name || 'Trader',
-              isDemo: false,
-              createdAt: session.user.created_at,
-            };
-            setUser(profile);
-            setIsDemo(false);
-            setActiveProvider('supabase');
-            localStorage.setItem('tradenest_auth_user', JSON.stringify(profile));
-          }
-        } catch (err) {
-          console.error('Error fetching Supabase session', err);
-        } finally {
-          if (mounted) setLoading(false);
-        }
-      }
-
-      checkSupabaseSession();
-
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        if (session?.user) {
-          const profile: UserProfile = {
-            id: session.user.id,
-            email: session.user.email || '',
-            fullName: session.user.user_metadata?.full_name || 'Trader',
-            isDemo: false,
-            createdAt: session.user.created_at,
-          };
-          setUser(profile);
-          setIsDemo(false);
-          setActiveProvider('supabase');
-          localStorage.setItem('tradenest_auth_user', JSON.stringify(profile));
-        } else {
+    if (!isFirebaseConfigured || !firebaseAuth) {
+      // If Firebase credentials are missing in .env, default to demo mode
+      if (mounted) {
+        if (!user) {
           setUser(DEMO_USER);
           setIsDemo(true);
-          setActiveProvider('demo');
-          localStorage.setItem('tradenest_auth_user', JSON.stringify(DEMO_USER));
         }
-      });
+        setLoading(false);
+      }
+      return;
+    }
 
-      return () => {
-        mounted = false;
-        subscription.unsubscribe();
+    const unsubscribe = onAuthStateChanged(firebaseAuth, async (fbUser) => {
+      if (!mounted) return;
+
+      if (fbUser) {
+        const profile = await syncUserToFirestore(fbUser);
+        if (mounted) {
+          setUser(profile);
+          setIsDemo(false);
+          localStorage.setItem('tradenest_auth_user', JSON.stringify(profile));
+          setLoading(false);
+        }
+      } else {
+        if (mounted) {
+          // If we had a real user before, clear out on sign out
+          const wasRealUser = user && !user.isDemo;
+          if (wasRealUser) {
+            setUser(null);
+            setIsDemo(false);
+            localStorage.removeItem('tradenest_auth_user');
+          } else if (!user) {
+            // No user stored at all
+            setUser(null);
+            setIsDemo(false);
+          }
+          setLoading(false);
+        }
+      }
+    });
+
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, [isFirebaseConfigured]);
+
+  // Sign In with Email & Password
+  const signInWithPassword = async (email: string, password: string): Promise<{ error: string | null }> => {
+    if (!isFirebaseConfigured || !firebaseAuth) {
+      return { 
+        error: 'Firebase is not configured in .env. Please configure Firebase API keys or use Demo Mode.' 
       };
     }
 
-    // 3. Fallback: Demo Mode
-    setLoading(false);
-  }, [activeProvider]);
-
-  // Sign In with Email & Password (routes to Firebase if available, else Supabase)
-  const signInWithPassword = async (email: string, password: string): Promise<{ error: string | null }> => {
-    // Try Firebase first
-    if (isFirebaseConfigured && firebaseAuth) {
-      try {
-        await signInWithEmailAndPassword(firebaseAuth, email, password);
-        return { error: null };
-      } catch (err: any) {
-        let msg = err.message || 'Firebase sign-in failed.';
-        if (err.code === 'auth/configuration-not-found') {
-          msg = 'Firebase Authentication is not fully initialized yet. Please open Firebase Console (Build > Authentication), click "Get started", and enable Email/Password.';
-        } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
-          msg = 'Invalid email or password. Please check your credentials or create a new account.';
-        } else if (err.code === 'auth/too-many-requests') {
-          msg = 'Access temporarily disabled due to many failed login attempts. Please reset your password or try again later.';
-        }
-        return { error: msg };
+    try {
+      const userCredential = await signInWithEmailAndPassword(firebaseAuth, email, password);
+      const profile = await syncUserToFirestore(userCredential.user);
+      setUser(profile);
+      setIsDemo(false);
+      localStorage.setItem('tradenest_auth_user', JSON.stringify(profile));
+      return { error: null };
+    } catch (err: any) {
+      let msg = err.message || 'Firebase sign-in failed.';
+      if (err.code === 'auth/configuration-not-found') {
+        msg = 'Firebase Authentication is not fully initialized. Please open Firebase Console (Build > Authentication), click "Get started", and enable Email/Password.';
+      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
+        msg = 'Invalid email or password. Please check your credentials or create a new account.';
+      } else if (err.code === 'auth/invalid-email') {
+        msg = 'Please enter a valid email address.';
+      } else if (err.code === 'auth/too-many-requests') {
+        msg = 'Access temporarily disabled due to many failed login attempts. Please reset your password or try again later.';
       }
+      return { error: msg };
     }
-
-    // Try Supabase
-    if (isSupabaseConfigured && supabase) {
-      try {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) return { error: error.message };
-        return { error: null };
-      } catch (e: any) {
-        return { error: e.message || 'Supabase sign-in failed.' };
-      }
-    }
-
-    return { 
-      error: 'Authentication backend not configured in .env. Please configure Firebase or Supabase, or use "Try Demo" mode.' 
-    };
   };
 
-  // Sign Up with Email & Password
+  // Sign Up with Email, Password & Full Name
   const signUp = async (email: string, password: string, fullName: string): Promise<{ error: string | null; message?: string }> => {
-    // Try Firebase
-    if (isFirebaseConfigured && firebaseAuth) {
-      try {
-        const userCredential = await createUserWithEmailAndPassword(firebaseAuth, email, password);
-        if (fullName && userCredential.user) {
-          await updateProfile(userCredential.user, { displayName: fullName });
-        }
-        return { error: null, message: 'Account registered successfully with Firebase! ₹1,00,000 virtual cash credited.' };
-      } catch (err: any) {
-        let msg = err.message || 'Firebase registration failed.';
-        if (err.code === 'auth/configuration-not-found') {
-          msg = 'Firebase Authentication is not fully initialized yet. Please open Firebase Console (Build > Authentication), click "Get started", and enable Email/Password.';
-        } else if (err.code === 'auth/email-already-in-use') {
-          msg = 'This email is already registered. Please sign in instead.';
-        } else if (err.code === 'auth/weak-password') {
-          msg = 'Password should be at least 6 characters.';
-        }
-        return { error: msg };
-      }
+    if (!isFirebaseConfigured || !firebaseAuth) {
+      return { 
+        error: 'Firebase is not configured in .env. Please configure Firebase API keys or use Demo Mode.' 
+      };
     }
 
-    // Try Supabase
-    if (isSupabaseConfigured && supabase) {
-      try {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: { full_name: fullName },
-          },
-        });
-
-        if (error) return { error: error.message };
-        if (data.session) {
-          return { error: null, message: 'Account created successfully!' };
-        }
-        return { error: null, message: 'Registration email sent. Please confirm your account.' };
-      } catch (e: any) {
-        return { error: e.message || 'Registration failed.' };
+    try {
+      const userCredential = await createUserWithEmailAndPassword(firebaseAuth, email, password);
+      
+      // Update display name
+      if (fullName && userCredential.user) {
+        await updateProfile(userCredential.user, { displayName: fullName });
       }
-    }
 
-    return { 
-      error: 'Authentication backend not configured in .env. Please configure Firebase or Supabase, or use "Try Demo" mode.' 
-    };
+      // Send email verification
+      try {
+        await sendEmailVerification(userCredential.user);
+      } catch (verificationErr) {
+        console.warn('Could not send email verification immediately:', verificationErr);
+      }
+
+      // Initialize Firestore document with ₹1,00,000 virtual cash
+      const profile = await syncUserToFirestore(userCredential.user, fullName);
+      setUser(profile);
+      setIsDemo(false);
+      localStorage.setItem('tradenest_auth_user', JSON.stringify(profile));
+
+      return { 
+        error: null, 
+        message: 'Account created successfully! We sent a verification link to your email, and ₹1,00,000 in virtual cash has been credited to your account.' 
+      };
+    } catch (err: any) {
+      let msg = err.message || 'Firebase registration failed.';
+      if (err.code === 'auth/configuration-not-found') {
+        msg = 'Firebase Authentication is not fully initialized. Please enable Email/Password in the Firebase Console.';
+      } else if (err.code === 'auth/email-already-in-use') {
+        msg = 'An account with this email already exists. Please sign in instead.';
+      } else if (err.code === 'auth/weak-password') {
+        msg = 'Password should be at least 6 characters long.';
+      } else if (err.code === 'auth/invalid-email') {
+        msg = 'Please enter a valid email address.';
+      }
+      return { error: msg };
+    }
   };
 
-  // Sign In with Google (Firebase)
+  // Sign In with Google
   const signInWithGoogle = async (): Promise<{ error: string | null }> => {
-    if (isFirebaseConfigured && firebaseAuth && googleProvider) {
-      try {
-        await signInWithPopup(firebaseAuth, googleProvider);
-        return { error: null };
-      } catch (err: any) {
-        let msg = err.message || 'Google sign-in failed.';
-        if (err.code === 'auth/configuration-not-found') {
-          msg = 'Google Sign-In is not enabled yet in your Firebase Console. Please go to Build > Authentication > Sign-in method, click Google, and enable it.';
-        } else if (err.code === 'auth/popup-closed-by-user') {
-          msg = 'Sign-in window closed before completing.';
-        }
-        return { error: msg };
-      }
+    if (!isFirebaseConfigured || !firebaseAuth || !googleProvider) {
+      return { 
+        error: 'Firebase is not configured in .env. Google Sign-In requires Firebase configuration.' 
+      };
     }
 
-    return { 
-      error: 'Firebase is not configured in .env with valid API keys. Google Sign-In requires Firebase.' 
-    };
+    try {
+      const result = await signInWithPopup(firebaseAuth, googleProvider);
+      const profile = await syncUserToFirestore(result.user);
+      setUser(profile);
+      setIsDemo(false);
+      localStorage.setItem('tradenest_auth_user', JSON.stringify(profile));
+      return { error: null };
+    } catch (err: any) {
+      let msg = err.message || 'Google sign-in failed.';
+      if (err.code === 'auth/configuration-not-found') {
+        msg = 'Google Sign-In is not enabled yet in your Firebase Console. Please go to Build > Authentication > Sign-in method, click Google, and enable it.';
+      } else if (err.code === 'auth/popup-closed-by-user') {
+        msg = 'Sign-in window closed before completing.';
+      } else if (err.code === 'auth/cancelled-popup-request') {
+        msg = 'Only one Google sign-in window can be open at a time.';
+      }
+      return { error: msg };
+    }
   };
 
-  // Reset Password
+  // Send Password Reset Email
   const resetPassword = async (email: string): Promise<{ error: string | null; message?: string }> => {
-    if (isFirebaseConfigured && firebaseAuth) {
-      try {
-        await sendPasswordResetEmail(firebaseAuth, email);
-        return { error: null, message: 'Password reset link sent to your email by Firebase.' };
-      } catch (err: any) {
-        return { error: err.message || 'Failed to send password reset email.' };
-      }
+    if (!isFirebaseConfigured || !firebaseAuth) {
+      return { 
+        error: 'Firebase is not configured in .env. Password reset requires Firebase configuration.' 
+      };
     }
 
-    if (isSupabaseConfigured && supabase) {
-      try {
-        const { error } = await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: window.location.origin + '/account',
-        });
-        if (error) return { error: error.message };
-        return { error: null, message: 'Password reset link sent to your email.' };
-      } catch (e: any) {
-        return { error: e.message || 'Error sending password reset email.' };
+    try {
+      await sendPasswordResetEmail(firebaseAuth, email);
+      return { 
+        error: null, 
+        message: 'A password reset link has been sent to your email. Please check your inbox and spam folder.' 
+      };
+    } catch (err: any) {
+      let msg = err.message || 'Failed to send password reset email.';
+      if (err.code === 'auth/user-not-found') {
+        msg = 'No registered account found with this email.';
+      } else if (err.code === 'auth/invalid-email') {
+        msg = 'Please enter a valid email address.';
       }
+      return { error: msg };
+    }
+  };
+
+  // Resend Email Verification
+  const resendVerificationEmail = async (): Promise<{ error: string | null; message?: string }> => {
+    if (!firebaseAuth?.currentUser) {
+      return { error: 'No signed-in user found. Please sign in first.' };
     }
 
-    return { 
-      error: 'Authentication backend not configured in .env. Password reset is not available in offline Demo Mode.' 
-    };
+    try {
+      await sendEmailVerification(firebaseAuth.currentUser);
+      return { error: null, message: 'Verification email resent successfully! Please check your inbox.' };
+    } catch (err: any) {
+      if (err.code === 'auth/too-many-requests') {
+        return { error: 'Too many requests. Please wait a minute before requesting another verification email.' };
+      }
+      return { error: err.message || 'Failed to resend verification email.' };
+    }
+  };
+
+  // Reload Current User Profile & Check Verification Status
+  const reloadUserProfile = async (): Promise<void> => {
+    if (firebaseAuth?.currentUser) {
+      try {
+        await reload(firebaseAuth.currentUser);
+        const fbUser = firebaseAuth.currentUser;
+        const updated = await syncUserToFirestore(fbUser);
+        setUser(updated);
+        localStorage.setItem('tradenest_auth_user', JSON.stringify(updated));
+      } catch (err) {
+        console.warn('Failed to reload Firebase user:', err);
+      }
+    }
   };
 
   // Sign Out
   const signOut = async (): Promise<void> => {
-    if (isFirebaseConfigured && firebaseAuth) {
+    if (firebaseAuth) {
       try {
         await firebaseSignOut(firebaseAuth);
       } catch (err) {
-        console.error('Error signing out of Firebase', err);
+        console.error('Error signing out of Firebase:', err);
       }
     }
 
-    if (isSupabaseConfigured && supabase && !isDemo) {
-      try {
-        await supabase.auth.signOut();
-      } catch (err) {
-        console.error('Error signing out of Supabase', err);
-      }
-    }
-
-    setUser(DEMO_USER);
-    setIsDemo(true);
-    setActiveProvider('demo');
-    localStorage.setItem('tradenest_auth_user', JSON.stringify(DEMO_USER));
+    // Clear user cached authentication state
+    setUser(null);
+    setIsDemo(false);
+    localStorage.removeItem('tradenest_auth_user');
   };
 
-  // Explicit Demo Mode
+  // Enable Demo Mode
   const enableDemoMode = (): void => {
     setUser(DEMO_USER);
     setIsDemo(true);
-    setActiveProvider('demo');
     localStorage.setItem('tradenest_auth_user', JSON.stringify(DEMO_USER));
   };
 
@@ -331,12 +358,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loading,
         isDemo,
         isFirebaseReady: isFirebaseConfigured,
-        isSupabaseReady: isSupabaseConfigured,
-        authProvider: activeProvider,
         signInWithPassword,
         signUp,
         signInWithGoogle,
         resetPassword,
+        resendVerificationEmail,
+        reloadUserProfile,
         signOut,
         enableDemoMode,
       }}

@@ -8,10 +8,28 @@ import {
   createUserWithEmailAndPassword,
   signOut as firebaseSignOut,
   sendPasswordResetEmail,
+  sendEmailVerification,
   updateProfile,
   onAuthStateChanged,
+  reload,
   User as FirebaseUser
 } from 'firebase/auth';
+import {
+  getFirestore,
+  Firestore,
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+  onSnapshot,
+  runTransaction,
+  serverTimestamp,
+  writeBatch
+} from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -31,13 +49,16 @@ export const isFirebaseConfigured = Boolean(
 
 let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
+let db: Firestore | null = null;
 let googleProvider: GoogleAuthProvider | null = null;
 
 if (isFirebaseConfigured) {
   try {
     app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
     auth = getAuth(app);
+    db = getFirestore(app);
     googleProvider = new GoogleAuthProvider();
+    googleProvider.setCustomParameters({ prompt: 'select_account' });
   } catch (error) {
     console.warn('Firebase initialization failed:', error);
   }
@@ -46,14 +67,30 @@ if (isFirebaseConfigured) {
 export { 
   app, 
   auth, 
+  db,
   googleProvider,
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   firebaseSignOut,
   sendPasswordResetEmail,
+  sendEmailVerification,
   updateProfile,
-  onAuthStateChanged
+  onAuthStateChanged,
+  reload,
+  // Firestore helpers
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+  onSnapshot,
+  runTransaction,
+  serverTimestamp,
+  writeBatch
 };
 
-export type { FirebaseUser };
+export type { FirebaseUser, Firestore, Auth };

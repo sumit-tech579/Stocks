@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Search, Sun, Moon, Sparkles, User, ShieldAlert } from 'lucide-react';
+import { Search, Sun, Moon, Sparkles, User, LogOut, LogIn, ChevronDown } from 'lucide-react';
 import { useTheme } from '../../context/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
 import { useTrading } from '../../context/TradingContext';
 import { OmniSearchModal } from '../common/OmniSearchModal';
-import { AuthModal } from '../trading/AuthModal';
 import { formatPercent } from '../../utils/formatters';
 
 export const Navbar: React.FC = () => {
@@ -13,11 +12,16 @@ export const Navbar: React.FC = () => {
   const { user, isDemo, signOut } = useAuth();
   const { indices } = useTrading();
   const [isSearchOpen, setIsSearchOpen] = useState(false);
-  const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const navigate = useNavigate();
 
   const nifty = indices.find(i => i.symbol === 'NIFTY 50');
+
+  const handleSignOut = async () => {
+    setIsUserMenuOpen(false);
+    await signOut();
+    navigate('/signin');
+  };
 
   return (
     <>
@@ -97,79 +101,111 @@ export const Navbar: React.FC = () => {
             </button>
 
             {/* Demo Mode Badge */}
-            {isDemo ? (
+            {isDemo && (
               <div className="hidden md:flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs font-semibold">
                 <Sparkles className="w-3.5 h-3.5 text-amber-500" />
                 <span>Demo Mode</span>
               </div>
-            ) : null}
+            )}
 
-            {/* User Dropdown / Sign in */}
-            <div className="relative">
-              <button
-                onClick={() => setIsUserMenuOpen(prev => !prev)}
-                className="flex items-center gap-2 p-1.5 sm:px-3 sm:py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-xs font-medium text-slate-700 dark:text-slate-200"
-              >
-                <div className="w-7 h-7 rounded-lg bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 flex items-center justify-center font-bold text-xs">
-                  {user?.fullName ? user.fullName[0].toUpperCase() : 'U'}
-                </div>
-                <span className="hidden sm:inline max-w-[100px] truncate">{user?.fullName || 'Account'}</span>
-              </button>
-
-              {isUserMenuOpen && (
-                <div 
-                  className="absolute right-0 mt-2 w-56 rounded-2xl bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800 shadow-xl py-2 z-50 animate-in fade-in slide-in-from-top-2"
-                  onClick={() => setIsUserMenuOpen(false)}
+            {/* User Dropdown / Sign in button */}
+            {user || isDemo ? (
+              <div className="relative">
+                <button
+                  onClick={() => setIsUserMenuOpen(prev => !prev)}
+                  className="flex items-center gap-2 p-1 sm:px-3 sm:py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-xs font-medium text-slate-700 dark:text-slate-200"
                 >
-                  <div className="px-4 py-2 border-b border-slate-100 dark:border-slate-800">
-                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
-                      {user?.fullName}
-                    </p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                      {user?.email}
-                    </p>
-                    <div className="mt-1.5 inline-block text-[10px] px-2 py-0.5 rounded font-semibold bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
-                      {isDemo ? 'Paper Trading (₹1,00,000)' : 'Authenticated User'}
-                    </div>
-                  </div>
-
-                  <Link
-                    to="/account"
-                    className="flex items-center gap-2 px-4 py-2.5 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-                  >
-                    <User className="w-4 h-4 text-slate-400" />
-                    <span>Account Settings</span>
-                  </Link>
-
-                  {isDemo ? (
-                    <button
-                      onClick={() => setIsAuthOpen(true)}
-                      className="w-full flex items-center gap-2 px-4 py-2.5 text-xs text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 text-left transition-colors font-medium"
-                    >
-                      <Sparkles className="w-4 h-4 text-emerald-500" />
-                      <span>Sign In / Register</span>
-                    </button>
+                  {user?.photoURL || user?.avatarUrl ? (
+                    <img 
+                      src={user.photoURL || user.avatarUrl} 
+                      alt={user.fullName || 'User'} 
+                      className="w-7 h-7 rounded-lg object-cover border border-emerald-500/30" 
+                    />
                   ) : (
-                    <button
-                      onClick={signOut}
-                      className="w-full flex items-center gap-2 px-4 py-2.5 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-left transition-colors font-medium"
-                    >
-                      <ShieldAlert className="w-4 h-4 text-rose-500" />
-                      <span>Switch to Demo / Logout</span>
-                    </button>
+                    <div className="w-7 h-7 rounded-lg bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 flex items-center justify-center font-bold text-xs">
+                      {user?.fullName ? user.fullName[0].toUpperCase() : 'U'}
+                    </div>
                   )}
-                </div>
-              )}
-            </div>
+                  <span className="hidden sm:inline max-w-[100px] truncate">{user?.fullName || 'Account'}</span>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 hidden sm:inline" />
+                </button>
+
+                {isUserMenuOpen && (
+                  <div 
+                    className="absolute right-0 mt-2 w-64 rounded-2xl bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800 shadow-xl py-2 z-50 animate-in fade-in slide-in-from-top-2"
+                    onClick={() => setIsUserMenuOpen(false)}
+                  >
+                    <div className="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800">
+                      <div className="flex items-center gap-2.5">
+                        {user?.photoURL || user?.avatarUrl ? (
+                          <img 
+                            src={user.photoURL || user.avatarUrl} 
+                            alt={user.fullName || 'User'} 
+                            className="w-8 h-8 rounded-lg object-cover" 
+                          />
+                        ) : (
+                          <div className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 flex items-center justify-center font-bold text-xs shrink-0">
+                            {user?.fullName ? user.fullName[0].toUpperCase() : 'U'}
+                          </div>
+                        )}
+                        <div className="overflow-hidden">
+                          <p className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+                            {user?.fullName || 'Trader'}
+                          </p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                            {user?.email || 'demo.trader@tradenest.in'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-2 inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded font-semibold bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
+                        {isDemo ? 'Paper Trading (₹1,00,000)' : user?.emailVerified ? 'Verified Account' : 'Email Unverified'}
+                      </div>
+                    </div>
+
+                    <Link
+                      to="/account"
+                      className="flex items-center gap-2.5 px-4 py-2.5 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                    >
+                      <User className="w-4 h-4 text-slate-400" />
+                      <span>Account & Settings</span>
+                    </Link>
+
+                    {isDemo ? (
+                      <Link
+                        to="/signin"
+                        className="flex items-center gap-2.5 px-4 py-2.5 text-xs text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-colors font-medium"
+                      >
+                        <Sparkles className="w-4 h-4 text-emerald-500" />
+                        <span>Sign In / Create Account</span>
+                      </Link>
+                    ) : (
+                      <button
+                        onClick={handleSignOut}
+                        className="w-full flex items-center gap-2.5 px-4 py-2.5 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-left transition-colors font-medium"
+                      >
+                        <LogOut className="w-4 h-4 text-rose-500" />
+                        <span>Sign Out</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <Link
+                to="/signin"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-sm transition-colors"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span>Sign In</span>
+              </Link>
+            )}
           </div>
         </div>
       </header>
 
       {/* OmniSearch Modal */}
       <OmniSearchModal isOpen={isSearchOpen} onClose={() => setIsSearchOpen(false)} />
-
-      {/* Auth Modal */}
-      <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} />
     </>
   );
 };

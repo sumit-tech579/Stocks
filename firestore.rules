@@ -1,0 +1,57 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Authentication & ownership helpers
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // User Profile and private paper-trading vault
+    match /users/{userId} {
+      // Users can only read and write their own profile document
+      allow read: if isOwner(userId);
+      
+      // On creation, ensure UID matches authenticated user
+      allow create: if isOwner(userId) 
+        && request.resource.data.uid == userId
+        && request.resource.data.virtualCash is number;
+        
+      // On update, prevent changing UID or deleting required balance fields
+      allow update: if isOwner(userId)
+        && request.resource.data.uid == userId;
+        
+      // Disallow client-side profile deletion
+      allow delete: if false;
+
+      // Holdings subcollection: strictly owned by userId
+      match /holdings/{symbol} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Orders subcollection: strictly owned by userId
+      match /orders/{orderId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Transactions subcollection: strictly owned by userId
+      match /transactions/{transactionId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Watchlist subcollection: strictly owned by userId
+      match /watchlist/{item} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Default deny for any unspecified documents
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

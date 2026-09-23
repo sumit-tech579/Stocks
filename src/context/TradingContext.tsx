@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { StockQuote, IndexOverview, PricePoint, TimeFrame } from '../types/stock';
 import { 
   Order, 
@@ -10,7 +10,7 @@ import {
 } from '../types/trading';
 import { ITradingDataProvider } from '../services/dataProvider';
 import { DemoDataProvider } from '../services/demoDataProvider';
-import { SupabaseDataProvider } from '../services/supabaseDataProvider';
+import { FirestoreTradingProvider } from '../services/firestoreTradingProvider';
 import { useAuth } from './AuthContext';
 import confetti from 'canvas-confetti';
 
@@ -44,17 +44,29 @@ interface TradingContextType {
 
 const TradingContext = createContext<TradingContextType | undefined>(undefined);
 
-// Instantiate demo provider once
-const demoProvider = new DemoDataProvider();
-const supabaseProvider = new SupabaseDataProvider(demoProvider);
-
 export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isDemo } = useAuth();
+  const { user, isDemo } = useAuth();
   
-  // Select active provider
+  // Track active provider reference for cleanup
+  const activeProviderRef = useRef<any>(null);
+
+  // Select active provider based on current authenticated UID or Demo
   const dataProvider: ITradingDataProvider = useMemo(() => {
-    return isDemo ? demoProvider : supabaseProvider;
-  }, [isDemo]);
+    // Clean up previous provider simulation interval if exists
+    if (activeProviderRef.current && typeof activeProviderRef.current.destroy === 'function') {
+      activeProviderRef.current.destroy();
+    }
+
+    let provider: ITradingDataProvider;
+    if (user && !isDemo) {
+      provider = new FirestoreTradingProvider(user.uid || user.id);
+    } else {
+      provider = new DemoDataProvider('demo_user');
+    }
+
+    activeProviderRef.current = provider;
+    return provider;
+  }, [user?.id, isDemo]);
 
   const [stocks, setStocks] = useState<StockQuote[]>([]);
   const [indices, setIndices] = useState<IndexOverview[]>([]);
@@ -65,6 +77,15 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [watchlist, setWatchlist] = useState<string[]>([]);
   const [lastTickTime, setLastTickTime] = useState<string>(new Date().toISOString());
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
+
+  // Clear in-memory state when user changes or signs out to prevent data leaking
+  useEffect(() => {
+    setHoldings([]);
+    setOrders([]);
+    setTransactions([]);
+    setAccountSummary(null);
+    setWatchlist([]);
+  }, [user?.id, isDemo]);
 
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Date.now().toString() + Math.random().toString(36).substring(2, 5);
@@ -111,14 +132,23 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setAccountSummary(acc);
       setWatchlist(wl);
     } catch (e) {
-      console.error('Error refreshing trading data', e);
+      console.error('Error refreshing trading data:', e);
     }
   }, [dataProvider]);
 
-  // Initial load
+  // Initial load when provider changes
   useEffect(() => {
     refreshData();
   }, [refreshData]);
+
+  // Clean up provider on unmount
+  useEffect(() => {
+    return () => {
+      if (activeProviderRef.current && typeof activeProviderRef.current.destroy === 'function') {
+        activeProviderRef.current.destroy();
+      }
+    };
+  }, []);
 
   // Subscribe to real-time market ticks & limit order matching
   useEffect(() => {
@@ -133,7 +163,6 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           showToast(`Limit order triggered! ${ord.side} ${ord.quantity}x ${ord.symbol} filled at ₹${ord.executionPrice}`, 'success');
           triggerConfetti();
         });
-        // Refresh account and holdings
         refreshData();
       } else {
         // Recalculate portfolio market value with new prices
@@ -182,7 +211,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const resetAccount = async (): Promise<void> => {
     await dataProvider.resetAccount();
     await refreshData();
-    showToast('Demo account reset to ₹1,00,000 virtual cash.', 'info');
+    showToast('Account reset to ₹1,00,000 virtual cash.', 'info');
   };
 
   const getStock = useCallback((symbol: string): StockQuote | undefined => {

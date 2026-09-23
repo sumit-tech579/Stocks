@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { Input } from '../common/Input';
 import { useAuth } from '../../context/AuthContext';
-import { Mail, Lock, User, Sparkles, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Mail, Lock, User, Eye, EyeOff, Sparkles, AlertCircle, CheckCircle2 } from 'lucide-react';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -17,14 +18,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     signInWithGoogle,
     resetPassword, 
     enableDemoMode, 
-    isFirebaseReady,
-    isSupabaseReady 
+    isFirebaseReady 
   } = useAuth();
 
+  const navigate = useNavigate();
   const [mode, setMode] = useState<'login' | 'signup' | 'reset'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -38,22 +40,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
     try {
       if (mode === 'login') {
-        const { error } = await signInWithPassword(email, password);
+        const { error } = await signInWithPassword(email.trim(), password);
         if (error) {
           setErrorMsg(error);
         } else {
           onClose();
         }
       } else if (mode === 'signup') {
-        const { error, message } = await signUp(email, password, fullName);
+        const { error, message } = await signUp(email.trim(), password, fullName.trim());
         if (error) {
           setErrorMsg(error);
         } else {
           setSuccessMsg(message || 'Account created successfully! ₹1,00,000 virtual cash credited.');
-          setTimeout(() => onClose(), 1500);
+          setTimeout(() => {
+            onClose();
+            navigate('/verify-email');
+          }, 1200);
         }
       } else if (mode === 'reset') {
-        const { error, message } = await resetPassword(email);
+        const { error, message } = await resetPassword(email.trim());
         if (error) {
           setErrorMsg(error);
         } else {
@@ -92,7 +97,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
       title={mode === 'login' ? 'Sign in to TradeNest' : mode === 'signup' ? 'Create TradeNest Account' : 'Reset Password'}
       description={
         mode === 'login' 
-          ? 'Sign in with your email and password' 
+          ? 'Sign in to access your paper-trading portfolio' 
           : mode === 'signup' 
           ? 'Get ₹1,00,000 in virtual cash for paper trading' 
           : 'Enter your email to receive a password reset link'
@@ -106,31 +111,31 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
             <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
             <span><strong>Firebase Auth Connected:</strong> Email & Google authentication active.</span>
           </div>
-        ) : !isSupabaseReady ? (
+        ) : (
           <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/40 text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2">
             <Sparkles className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
             <div>
-              Firebase/Supabase keys not configured in <code className="bg-amber-100 dark:bg-amber-900/50 px-1 py-0.5 rounded font-mono">.env</code>. You can seamlessly practice paper trading right now using <strong>Demo Mode</strong>!
+              Firebase keys not configured in <code className="bg-amber-100 dark:bg-amber-900/50 px-1 py-0.5 rounded font-mono">.env</code>. You can practice paper trading right now using <strong>Demo Mode</strong>!
             </div>
           </div>
-        ) : null}
+        )}
 
         {/* Error or Success notification */}
         {errorMsg && (
-          <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 text-xs text-rose-700 dark:text-rose-300 flex items-start gap-2">
+          <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 text-xs text-rose-700 dark:text-rose-300 flex items-start gap-2 animate-in fade-in">
             <AlertCircle className="w-4 h-4 shrink-0 text-rose-500 mt-0.5" />
             <span>{errorMsg}</span>
           </div>
         )}
 
         {successMsg && (
-          <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 text-xs text-emerald-700 dark:text-emerald-300 flex items-start gap-2">
+          <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 text-xs text-emerald-700 dark:text-emerald-300 flex items-start gap-2 animate-in fade-in">
             <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500 mt-0.5" />
             <span>{successMsg}</span>
           </div>
         )}
 
-        {/* Google Sign-in button (if Firebase ready) */}
+        {/* Google Sign-in button */}
         {mode !== 'reset' && (
           <>
             <button
@@ -185,9 +190,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
           {mode !== 'reset' && (
             <Input
               label="Password"
-              type="password"
+              type={showPassword ? 'text' : 'password'}
               placeholder="••••••••"
               leftIcon={<Lock className="w-4 h-4" />}
+              rightIcon={
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(prev => !prev)}
+                  className="p-1 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none transition-colors"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              }
               value={password}
               onChange={e => setPassword(e.target.value)}
               required
@@ -216,6 +231,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
             size="md"
             className="w-full mt-2"
             isLoading={isLoading}
+            disabled={isLoading || isGoogleLoading}
           >
             {mode === 'login' ? 'Sign In' : mode === 'signup' ? 'Create Account & Claim ₹1,00,000' : 'Send Reset Link'}
           </Button>
@@ -227,7 +243,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
             <div className="w-full border-t border-slate-200 dark:border-slate-800" />
           </div>
           <div className="relative flex justify-center text-xs uppercase">
-            <span className="bg-white dark:bg-[#131B2E] px-2 text-slate-400">or continue without account</span>
+            <span className="bg-white dark:bg-[#131B2E] px-2 text-slate-400">or explore in demo</span>
           </div>
         </div>
 

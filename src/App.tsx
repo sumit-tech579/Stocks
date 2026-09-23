@@ -8,6 +8,7 @@ import { Navbar } from './components/layout/Navbar';
 import { Sidebar } from './components/layout/Sidebar';
 import { BottomNav } from './components/layout/BottomNav';
 import { ToastContainer } from './components/common/Toast';
+import { ProtectedRoute } from './components/auth/ProtectedRoute';
 
 import { DashboardPage } from './pages/DashboardPage';
 import { ExplorePage } from './pages/ExplorePage';
@@ -16,6 +17,10 @@ import { PortfolioPage } from './pages/PortfolioPage';
 import { OrdersPage } from './pages/OrdersPage';
 import { WatchlistPage } from './pages/WatchlistPage';
 import { AccountPage } from './pages/AccountPage';
+import { SignInPage } from './pages/SignInPage';
+import { SignUpPage } from './pages/SignUpPage';
+import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
+import { VerifyEmailPage } from './pages/VerifyEmailPage';
 
 export const App: React.FC = () => {
   return (
@@ -36,13 +41,24 @@ export const App: React.FC = () => {
 
                 <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-full overflow-hidden">
                   <Routes>
-                    <Route path="/" element={<DashboardPage />} />
+                    {/* Public Authentication Routes */}
+                    <Route path="/signin" element={<SignInPage />} />
+                    <Route path="/signup" element={<SignUpPage />} />
+                    <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+                    <Route path="/verify-email" element={<VerifyEmailPage />} />
+
+                    {/* Stock Discovery (Public / Accessible) */}
                     <Route path="/explore" element={<ExplorePage />} />
                     <Route path="/stocks/:symbol" element={<StockDetailPage />} />
-                    <Route path="/portfolio" element={<PortfolioPage />} />
-                    <Route path="/orders" element={<OrdersPage />} />
-                    <Route path="/watchlist" element={<WatchlistPage />} />
-                    <Route path="/account" element={<AccountPage />} />
+
+                    {/* Protected User Routes (Require Authenticated User or Demo Mode) */}
+                    <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+                    <Route path="/portfolio" element={<ProtectedRoute><PortfolioPage /></ProtectedRoute>} />
+                    <Route path="/orders" element={<ProtectedRoute><OrdersPage /></ProtectedRoute>} />
+                    <Route path="/watchlist" element={<ProtectedRoute><WatchlistPage /></ProtectedRoute>} />
+                    <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
+
+                    {/* Fallback */}
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </main>

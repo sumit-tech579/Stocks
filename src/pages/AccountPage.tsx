@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
 import { 
   Moon, 
   Sun, 
@@ -7,7 +8,9 @@ import {
   ShieldCheck, 
   BookOpen, 
   Sparkles, 
-  AlertTriangle
+  AlertTriangle,
+  Mail,
+  CheckCircle2
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -17,15 +20,19 @@ import { Card } from '../components/common/Card';
 import { Button } from '../components/common/Button';
 import { Badge } from '../components/common/Badge';
 import { ResetAccountModal } from '../components/trading/ResetAccountModal';
-import { AuthModal } from '../components/trading/AuthModal';
 
 export const AccountPage: React.FC = () => {
   const { user, isDemo, signOut } = useAuth();
   const { theme, setTheme } = useTheme();
   const { accountSummary } = useTrading();
+  const navigate = useNavigate();
 
   const [isResetOpen, setIsResetOpen] = useState(false);
-  const [isAuthOpen, setIsAuthOpen] = useState(false);
+
+  const handleSignOut = async () => {
+    await signOut();
+    navigate('/signin');
+  };
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto pb-16">
@@ -43,45 +50,76 @@ export const AccountPage: React.FC = () => {
       <Card className="p-5 sm:p-6 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-emerald-100 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold text-xl shadow-sm">
-              {user?.fullName ? user.fullName[0].toUpperCase() : 'U'}
-            </div>
+            {user?.photoURL || user?.avatarUrl ? (
+              <img
+                src={user.photoURL || user.avatarUrl}
+                alt={user.fullName || 'User'}
+                className="w-14 h-14 rounded-2xl object-cover border-2 border-emerald-500/30 shadow-sm"
+              />
+            ) : (
+              <div className="w-14 h-14 rounded-2xl bg-emerald-100 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold text-xl shadow-sm">
+                {user?.fullName ? user.fullName[0].toUpperCase() : 'U'}
+              </div>
+            )}
+
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-bold text-lg text-slate-900 dark:text-white">
                   {user?.fullName || 'Demo Trader'}
                 </h3>
                 {isDemo ? (
                   <Badge variant="amber" size="sm">Demo Account</Badge>
+                ) : user?.emailVerified ? (
+                  <Badge variant="green" size="sm">
+                    <CheckCircle2 className="w-3 h-3 mr-1 inline" />
+                    Verified Email
+                  </Badge>
                 ) : (
-                  <Badge variant="green" size="sm">Verified Account</Badge>
+                  <Badge variant="amber" size="sm">
+                    <Mail className="w-3 h-3 mr-1 inline" />
+                    Unverified Email
+                  </Badge>
                 )}
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                 {user?.email || 'demo.trader@tradenest.in'}
               </p>
+              {!isDemo && user?.uid && (
+                <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                  UID: {user.uid}
+                </p>
+              )}
             </div>
           </div>
 
-          <div>
+          <div className="flex items-center gap-2">
             {isDemo ? (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => setIsAuthOpen(true)}
-              >
-                <Sparkles className="w-3.5 h-3.5 mr-1.5" />
-                Sign In / Register
-              </Button>
+              <Link to="/signin">
+                <Button variant="primary" size="sm">
+                  <Sparkles className="w-3.5 h-3.5 mr-1.5" />
+                  Sign In / Register
+                </Button>
+              </Link>
             ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={signOut}
-              >
-                <LogOut className="w-3.5 h-3.5 mr-1.5" />
-                Sign Out
-              </Button>
+              <>
+                {!user?.emailVerified && (
+                  <Link to="/verify-email">
+                    <Button variant="outline" size="sm">
+                      <Mail className="w-3.5 h-3.5 mr-1.5" />
+                      Verify Email
+                    </Button>
+                  </Link>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSignOut}
+                  className="text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 border-rose-200 dark:border-rose-900/60"
+                >
+                  <LogOut className="w-3.5 h-3.5 mr-1.5" />
+                  Sign Out
+                </Button>
+              </>
             )}
           </div>
         </div>
@@ -97,7 +135,7 @@ export const AccountPage: React.FC = () => {
           <div>
             <span className="text-xs text-slate-400 block">Account Status</span>
             <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-              Active Simulation
+              {isDemo ? 'Local Simulation' : 'Cloud Synchronized'}
             </span>
           </div>
 
@@ -146,7 +184,7 @@ export const AccountPage: React.FC = () => {
         </div>
       </Card>
 
-      {/* Educational Guide: How Paper Trading Works */}
+      {/* Educational Guide */}
       <Card className="p-5 sm:p-6 space-y-4">
         <div className="flex items-center gap-2">
           <BookOpen className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
@@ -159,21 +197,21 @@ export const AccountPage: React.FC = () => {
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800 space-y-1">
             <h4 className="font-semibold text-slate-900 dark:text-slate-100">1. Virtual Money (₹1,00,000)</h4>
             <p className="text-slate-500 dark:text-slate-400 text-xs">
-              Every account starts with ₹1,00,000 in virtual funds. Use this to practice trading strategies, learn risk management, and understand portfolio diversification without monetary risk.
+              Every authenticated account starts with ₹1,00,000 in virtual funds initialized once in your Cloud Firestore profile. Practice trading strategies without monetary risk.
             </p>
           </div>
 
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800 space-y-1">
             <h4 className="font-semibold text-slate-900 dark:text-slate-100">2. Market vs Limit Orders</h4>
             <p className="text-slate-500 dark:text-slate-400 text-xs">
-              <strong>Market orders</strong> fill immediately at the current simulated quote. <strong>Limit orders</strong> let you set a target execution price. When buying on limit, your virtual cash is reserved until the price matches your target.
+              <strong>Market orders</strong> fill immediately at the current simulated quote. <strong>Limit orders</strong> let you set a target execution price with automatic cash and share reservations.
             </p>
           </div>
 
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800 space-y-1">
-            <h4 className="font-semibold text-slate-900 dark:text-slate-100">3. Live Simulation Engine</h4>
+            <h4 className="font-semibold text-slate-900 dark:text-slate-100">3. User Isolation & Security</h4>
             <p className="text-slate-500 dark:text-slate-400 text-xs">
-              Stock prices fluctuate dynamically using realistic geometric Brownian motion while your browser tab is open. Pending limit orders trigger automatically when quotes cross your limit conditions.
+              Your trades and balance are completely isolated under your private Firebase UID with Firestore Security Rules. No other user can view or alter your portfolio.
             </p>
           </div>
         </div>
@@ -192,10 +230,10 @@ export const AccountPage: React.FC = () => {
         <div>
           <h3 className="font-bold text-rose-600 dark:text-rose-400 text-base flex items-center gap-2">
             <AlertTriangle className="w-5 h-5" />
-            Reset Demo Account
+            Reset Account Balance
           </h3>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Want to start fresh? Resetting will restore your virtual cash balance to ₹1,00,000 and clear all existing holdings and trade orders.
+            Want to start fresh? Resetting will restore your virtual cash balance to ₹1,00,000 and clear all existing holdings and trade orders for this account.
           </p>
         </div>
 
@@ -205,13 +243,12 @@ export const AccountPage: React.FC = () => {
           onClick={() => setIsResetOpen(true)}
         >
           <RotateCcw className="w-4 h-4 mr-2" />
-          Reset Demo Balance
+          Reset Virtual Balance
         </Button>
       </Card>
 
       {/* Modals */}
       <ResetAccountModal isOpen={isResetOpen} onClose={() => setIsResetOpen(false)} />
-      <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} />
     </div>
   );
 };
