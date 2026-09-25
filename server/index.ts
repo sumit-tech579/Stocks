@@ -511,7 +511,15 @@ app.post('/api/auth/reset-password', async (req: Request, res: Response) => {
   }
 });
 
-// Start Express Server
-app.listen(PORT, () => {
-  console.log(`[TradeNest Server] Authentication API running on http://localhost:${PORT}`);
-});
+// Export Express app for Vite dev server middleware integration
+export { app };
+export default app;
+
+// Start standalone Express Server if run directly via tsx server/index.ts
+const isDirectRun = process.argv[1]?.includes('server/index') || process.env.RUN_STANDALONE === 'true';
+if (isDirectRun) {
+  app.listen(PORT, () => {
+    console.log(`[TradeNest Server] Authentication API running on http://localhost:${PORT}`);
+  });
+}
+

@@ -8,7 +8,8 @@ import {
   KeyRound,
   LogOut,
   ShieldCheck,
-  Mail
+  Mail,
+  RefreshCw
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { Card } from '../components/common/Card';
@@ -30,6 +31,7 @@ export const VerifyEmailPage: React.FC = () => {
     isDemo, 
     verifyEmailCode, 
     sendVerificationCode, 
+    reloadUserProfile,
     signOut 
   } = useAuth();
   
@@ -42,6 +44,7 @@ export const VerifyEmailPage: React.FC = () => {
   const [resendCooldown, setResendCooldown] = useState(0);
   const [isResending, setIsResending] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
+  const [isCheckingStatus, setIsCheckingStatus] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
@@ -49,7 +52,11 @@ export const VerifyEmailPage: React.FC = () => {
   // If already verified or in demo mode, navigate straight to dashboard
   useEffect(() => {
     if (user?.emailVerified || isDemo) {
-      navigate('/', { replace: true });
+      setIsSuccess(true);
+      const timer = setTimeout(() => {
+        navigate('/', { replace: true });
+      }, 1000);
+      return () => clearTimeout(timer);
     }
   }, [user?.emailVerified, isDemo, navigate]);
 
@@ -187,13 +194,34 @@ export const VerifyEmailPage: React.FC = () => {
           setResendCooldown(retryAfter);
         }
       } else {
-        setStatusMessage(message || 'A fresh 6-digit verification code has been dispatched to your email.');
+        setStatusMessage(message || 'A fresh verification code has been dispatched to your email.');
         setResendCooldown(60); // 60s cooldown
         setDigits(['', '', '', '', '', '']);
         inputRefs.current[0]?.focus();
       }
     } finally {
       setIsResending(false);
+    }
+  };
+
+  // Check verification status (useful if user clicked link in email)
+  const handleCheckStatus = async () => {
+    setIsCheckingStatus(true);
+    setErrorMessage(null);
+    try {
+      await reloadUserProfile();
+      if (user?.emailVerified) {
+        setIsSuccess(true);
+        setStatusMessage('Email verified! Opening your trading dashboard...');
+        triggerConfetti();
+        setTimeout(() => {
+          navigate('/', { replace: true });
+        }, 1200);
+      } else {
+        setStatusMessage('Verification pending. Please enter the 6-digit code sent to your email or click the link in your email.');
+      }
+    } finally {
+      setIsCheckingStatus(false);
     }
   };
 
@@ -316,8 +344,8 @@ export const VerifyEmailPage: React.FC = () => {
                 <ArrowRight className="w-4 h-4 ml-1.5" />
               </Button>
 
-              {/* Resend Code Button with countdown */}
-              <div className="text-center pt-1">
+              {/* Secondary Actions: Resend Code & Check Status */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-1 text-center">
                 <button
                   type="button"
                   onClick={handleResend}
@@ -328,8 +356,18 @@ export const VerifyEmailPage: React.FC = () => {
                   <span>
                     {resendCooldown > 0
                       ? `Resend code in ${resendCooldown}s`
-                      : "Didn't receive the code? Resend Code"}
+                      : "Resend Code"}
                   </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCheckStatus}
+                  disabled={isCheckingStatus}
+                  className="text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors inline-flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isCheckingStatus ? 'animate-spin' : ''}`} />
+                  <span>Refresh Status</span>
                 </button>
               </div>
             </div>
@@ -348,7 +386,7 @@ export const VerifyEmailPage: React.FC = () => {
 
             <div className="flex items-center gap-1 text-[11px] text-slate-400">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-              <span>Expires in 10 minutes</span>
+              <span>Expires in 15 minutes</span>
             </div>
           </div>
         </Card>

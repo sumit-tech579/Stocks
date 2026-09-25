@@ -1,10 +1,30 @@
-import { defineConfig } from 'vite';
+import { defineConfig, Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 
+// Vite plugin that integrates backend auth API directly into Vite dev server
+function authApiPlugin(): Plugin {
+  return {
+    name: 'auth-api-server',
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        if (req.url?.startsWith('/api')) {
+          try {
+            const { app } = await import('./server/index');
+            return app(req, res, next);
+          } catch (err) {
+            console.error('[Vite Auth API Error]:', err);
+          }
+        }
+        next();
+      });
+    },
+  };
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), authApiPlugin()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -13,12 +33,6 @@ export default defineConfig({
   server: {
     port: 3000,
     open: false,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-      },
-    },
   },
   build: {
     rollupOptions: {
