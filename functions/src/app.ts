@@ -1,23 +1,27 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
-import dotenv from 'dotenv';
-import { auth, db } from './firebaseAdmin';
+import { auth, db } from './firebaseAdmin.js';
 import {
   sendVerificationEmail,
   sendPasswordResetEmail,
   sendPasswordChangedEmail,
   sendGoogleAccountNoticeEmail,
-} from './mailer';
-
-dotenv.config();
+} from './mailer.js';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
 const HMAC_SECRET = process.env.CODE_HMAC_SECRET || 'tradenest-secure-otp-secret-key-2025';
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
+
+// Support both /api/... (hosting rewrite) and /... (direct function invoke)
+app.use((req, _res, next) => {
+  if (!req.url.startsWith('/api')) {
+    req.url = '/api' + (req.url.startsWith('/') ? req.url : '/' + req.url);
+  }
+  next();
+});
 
 // Helper: Compute keyed HMAC-SHA256
 function computeHmac(payload: string): string {
@@ -56,28 +60,21 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
   }
 }
 
-// =============================================================================
-// HEALTH CHECK
-// =============================================================================
+// Health Check
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({
     status: 'ok',
-    service: 'TradeNest Auth Service',
+    service: 'TradeNest Cloud Functions Auth API',
     time: new Date().toISOString(),
-    firebaseProject: auth.app.options.projectId || 'tradenest-1cc6b',
   });
 });
 
-// =============================================================================
-// 1. POST /api/auth/send-verification-code
-// Authenticated endpoint: Generates & dispatches 6-digit code to user's registered email
-// =============================================================================
+// 1. Send verification code
 app.post('/api/auth/send-verification-code', requireAuth, async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
     const uid = user.uid;
 
-    // Fetch user record directly from Firebase Auth to guarantee authoritative email
     const userRecord = await auth.getUser(uid);
     const email = userRecord.email;
 
@@ -86,7 +83,6 @@ app.post('/api/auth/send-verification-code', requireAuth, async (req: Request, r
       return;
     }
 
-    // Check if user is already verified natively
     if (userRecord.emailVerified) {
       res.status(200).json({
         success: true,
@@ -102,7 +98,6 @@ app.post('/api/auth/send-verification-code', requireAuth, async (req: Request, r
 
     if (existingSnap.exists) {
       const data = existingSnap.data()!;
-      // Enforce 60-second cooldown between resends
       const elapsedSeconds = (now - (data.createdAt || 0)) / 1000;
       if (elapsedSeconds < 60) {
         const waitSec = Math.ceil(60 - elapsedSeconds);
@@ -114,12 +109,10 @@ app.post('/api/auth/send-verification-code', requireAuth, async (req: Request, r
       }
     }
 
-    // Generate cryptographically secure 6-digit random code
     const code = crypto.randomInt(100000, 1000000).toString();
     const codeHash = computeHmac(`${uid}:${email.toLowerCase()}:${code}:email_verification`);
-    const expiresAt = now + 10 * 60 * 1000; // 10 minutes
+    const expiresAt = now + 10 * 60 * 1000;
 
-    // Store only the hashed challenge in Firestore (Backend-only)
     await challengeRef.set({
       uid,
       email: email.toLowerCase(),
@@ -131,7 +124,6 @@ app.post('/api/auth/send-verification-code', requireAuth, async (req: Request, r
       used: false,
     });
 
-    // Send transactional email
     try {
       await sendVerificationEmail(email, code);
     } catch (mailErr: any) {
@@ -142,7 +134,6 @@ app.post('/api/auth/send-verification-code', requireAuth, async (req: Request, r
       return;
     }
 
-    // Never return the code in the response
     res.json({
       success: true,
       message: 'A 6-digit verification code has been sent to your registered email address.',
@@ -154,10 +145,7 @@ app.post('/api/auth/send-verification-code', requireAuth, async (req: Request, r
   }
 });
 
-// =============================================================================
-// 2. POST /api/auth/verify-email-code
-// Authenticated endpoint: Verifies 6-digit code and marks native user verified
-// =============================================================================
+// 2. Verify email code
 app.post('/api/auth/verify-email-code', requireAuth, async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
@@ -196,7 +184,6 @@ app.post('/api/auth/verify-email-code', requireAuth, async (req: Request, res: R
       return;
     }
 
-    // Verify user record email
     const userRecord = await auth.getUser(uid);
     const email = userRecord.email;
     if (!email || challenge.email.toLowerCase() !== email.toLowerCase()) {
@@ -204,7 +191,6 @@ app.post('/api/auth/verify-email-code', requireAuth, async (req: Request, res: R
       return;
     }
 
-    // Timing-safe HMAC comparison
     const expectedHash = computeHmac(`${uid}:${email.toLowerCase()}:${cleanCode}:email_verification`);
     const isMatch = timingSafeMatch(challenge.codeHash, expectedHash);
 
@@ -219,19 +205,16 @@ app.post('/api/auth/verify-email-code', requireAuth, async (req: Request, res: R
       return;
     }
 
-    // Code is valid! Mark challenge consumed
     await challengeRef.update({
       used: true,
       remainingAttempts: 0,
       verifiedAt: now,
     });
 
-    // Authoritative update: update native Firebase Auth user record
     await auth.updateUser(uid, {
       emailVerified: true,
     });
 
-    // Update user profile document in Firestore
     try {
       await db.collection('users').doc(uid).set(
         {
@@ -240,11 +223,7 @@ app.post('/api/auth/verify-email-code', requireAuth, async (req: Request, res: R
         },
         { merge: true }
       );
-    } catch (dbErr) {
-      console.warn('[verify-email-code] Could not update users collection, native auth succeeded:', dbErr);
-    }
-
-    console.log(`[verify-email-code] Successfully verified email for user ${uid} (${email})`);
+    } catch {}
 
     res.json({
       success: true,
@@ -256,10 +235,7 @@ app.post('/api/auth/verify-email-code', requireAuth, async (req: Request, res: R
   }
 });
 
-// =============================================================================
-// 3. POST /api/auth/change-email
-// Authenticated endpoint: Allows unverified user to change their registered email
-// =============================================================================
+// 3. Change email
 app.post('/api/auth/change-email', requireAuth, async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
@@ -274,19 +250,16 @@ app.post('/api/auth/change-email', requireAuth, async (req: Request, res: Respon
     const cleanNewEmail = newEmail.trim().toLowerCase();
     const userRecord = await auth.getUser(uid);
 
-    // Only unverified accounts can change email without re-authentication
     if (userRecord.emailVerified) {
       res.status(400).json({ error: 'Your email address is already verified and cannot be changed here.' });
       return;
     }
 
-    // Update email in Firebase Auth
     await auth.updateUser(uid, {
       email: cleanNewEmail,
       emailVerified: false,
     });
 
-    // Update Firestore user document
     await db.collection('users').doc(uid).set(
       {
         email: cleanNewEmail,
@@ -295,7 +268,6 @@ app.post('/api/auth/change-email', requireAuth, async (req: Request, res: Respon
       { merge: true }
     );
 
-    // Invalidate old challenge and generate new 6-digit code for the new email
     const now = Date.now();
     const code = crypto.randomInt(100000, 1000000).toString();
     const codeHash = computeHmac(`${uid}:${cleanNewEmail}:${code}:email_verification`);
@@ -313,7 +285,6 @@ app.post('/api/auth/change-email', requireAuth, async (req: Request, res: Respon
       used: false,
     });
 
-    // Send email to new address
     try {
       await sendVerificationEmail(cleanNewEmail, code);
     } catch (mailErr: any) {
@@ -330,18 +301,11 @@ app.post('/api/auth/change-email', requireAuth, async (req: Request, res: Respon
     });
   } catch (err: any) {
     console.error('[change-email] Error:', err);
-    let msg = 'Failed to update email address.';
-    if (err.code === 'auth/email-already-exists') {
-      msg = 'An account with this email address already exists.';
-    }
-    res.status(500).json({ error: msg });
+    res.status(500).json({ error: 'Failed to update email address.' });
   }
 });
 
-// =============================================================================
-// 4. POST /api/auth/send-password-reset-code
-// Public endpoint: Sends 6-digit code for password reset (generic response)
-// =============================================================================
+// 4. Send password reset code
 app.post('/api/auth/send-password-reset-code', async (req: Request, res: Response) => {
   const genericSuccess = {
     success: true,
@@ -356,20 +320,15 @@ app.post('/api/auth/send-password-reset-code', async (req: Request, res: Respons
     }
 
     const cleanEmail = email.trim().toLowerCase();
-
-    // Check if user exists in Firebase Auth without revealing to client
     let userRecord;
     try {
       userRecord = await auth.getUserByEmail(cleanEmail);
     } catch {
-      // User not found: return generic success to prevent account enumeration
       res.json(genericSuccess);
       return;
     }
 
     const uid = userRecord.uid;
-
-    // Check if user only has Google Sign-In (no password provider)
     const hasPasswordProvider = userRecord.providerData.some((p) => p.providerId === 'password');
     const hasGoogleProvider = userRecord.providerData.some((p) => p.providerId === 'google.com');
 
@@ -381,7 +340,6 @@ app.post('/api/auth/send-password-reset-code', async (req: Request, res: Respons
       return;
     }
 
-    // Check cooldown on active challenge
     const challengeRef = db.collection('auth_challenges').doc(`${uid}_password_reset`);
     const existingSnap = await challengeRef.get();
     const now = Date.now();
@@ -399,10 +357,9 @@ app.post('/api/auth/send-password-reset-code', async (req: Request, res: Respons
       }
     }
 
-    // Generate secure 6-digit code
     const code = crypto.randomInt(100000, 1000000).toString();
     const codeHash = computeHmac(`${uid}:${cleanEmail}:${code}:password_reset`);
-    const expiresAt = now + 10 * 60 * 1000; // 10 minutes
+    const expiresAt = now + 10 * 60 * 1000;
 
     await challengeRef.set({
       uid,
@@ -417,25 +374,18 @@ app.post('/api/auth/send-password-reset-code', async (req: Request, res: Respons
 
     try {
       await sendPasswordResetEmail(cleanEmail, code);
-    } catch (mailErr) {
-      console.error('[send-password-reset-code] Mail delivery failed:', mailErr);
-    }
+    } catch {}
 
     res.json(genericSuccess);
   } catch (err: any) {
-    console.error('[send-password-reset-code] Error:', err);
-    res.status(500).json({ error: 'Unable to process password reset request. Please try again later.' });
+    res.status(500).json({ error: 'Unable to process password reset request.' });
   }
 });
 
-// =============================================================================
-// 5. POST /api/auth/verify-password-reset-code
-// Public endpoint: Verifies recovery code and exchanges for short-lived resetAuthToken
-// =============================================================================
+// 5. Verify password reset code
 app.post('/api/auth/verify-password-reset-code', async (req: Request, res: Response) => {
   try {
     const { email, code } = req.body;
-
     if (!email || !code || typeof code !== 'string' || !/^\d{6}$/.test(code.trim())) {
       res.status(400).json({ error: 'Please enter a valid 6-digit recovery code.' });
       return;
@@ -457,164 +407,77 @@ app.post('/api/auth/verify-password-reset-code', async (req: Request, res: Respo
     const snap = await challengeRef.get();
 
     if (!snap.exists) {
-      res.status(400).json({ error: 'No active recovery code found for this account. Please request a new one.' });
+      res.status(400).json({ error: 'No active recovery code found for this account.' });
       return;
     }
 
     const challenge = snap.data()!;
     const now = Date.now();
 
-    if (challenge.used) {
-      res.status(400).json({ error: 'This recovery code has already been used. Please request a new one.' });
+    if (challenge.used || now > challenge.expiresAt || challenge.remainingAttempts <= 0) {
+      res.status(400).json({ error: 'Recovery code has expired or was already used.' });
       return;
     }
 
-    if (now > challenge.expiresAt) {
-      res.status(400).json({ error: 'Recovery code has expired. Please request a new one.' });
-      return;
-    }
-
-    if (challenge.remainingAttempts <= 0) {
-      res.status(400).json({ error: 'Maximum attempts exceeded for this code. Please request a new code.' });
-      return;
-    }
-
-    // Verify HMAC timing-safely
     const expectedHash = computeHmac(`${uid}:${cleanEmail}:${cleanCode}:password_reset`);
     const isMatch = timingSafeMatch(challenge.codeHash, expectedHash);
 
     if (!isMatch) {
       const remaining = challenge.remainingAttempts - 1;
       await challengeRef.update({ remainingAttempts: remaining });
-      res.status(400).json({
-        error: `Incorrect recovery code. ${remaining > 0 ? `${remaining} attempts remaining.` : 'Code locked. Please request a new one.'}`,
-        remainingAttempts: remaining,
-      });
+      res.status(400).json({ error: `Incorrect recovery code. ${remaining} attempts remaining.` });
       return;
     }
 
-    // Code is valid! Consume challenge
-    await challengeRef.update({
-      used: true,
-      remainingAttempts: 0,
-      verifiedAt: now,
-    });
+    await challengeRef.update({ used: true, remainingAttempts: 0, verifiedAt: now });
 
-    // Generate single-use, cryptographically strong reset authorization token (32 bytes)
     const resetAuthToken = crypto.randomBytes(32).toString('hex');
-    const tokenExpiresAt = now + 15 * 60 * 1000; // 15-minute window to enter new password
-
     await db.collection('reset_authorizations').doc(resetAuthToken).set({
       uid,
       email: cleanEmail,
       createdAt: now,
-      expiresAt: tokenExpiresAt,
+      expiresAt: now + 15 * 60 * 1000,
       consumed: false,
     });
 
-    res.json({
-      success: true,
-      message: 'Code verified successfully. You may now choose your new password.',
-      resetAuthToken,
-    });
+    res.json({ success: true, resetAuthToken });
   } catch (err: any) {
-    console.error('[verify-password-reset-code] Error:', err);
     res.status(500).json({ error: 'Verification failed. Please try again.' });
   }
 });
 
-// =============================================================================
-// 6. POST /api/auth/reset-password
-// Public endpoint: Validates resetAuthToken and sets new password
-// =============================================================================
+// 6. Reset password
 app.post('/api/auth/reset-password', async (req: Request, res: Response) => {
   try {
     const { resetAuthToken, newPassword } = req.body;
-
-    if (!resetAuthToken || typeof resetAuthToken !== 'string') {
-      res.status(400).json({ error: 'Missing reset authorization token. Please start the recovery process again.' });
-      return;
-    }
-
-    // Password policy validation: minimum 8 chars, at least one letter and one number or symbol
-    if (
-      !newPassword ||
-      typeof newPassword !== 'string' ||
-      newPassword.length < 8 ||
-      !/[A-Za-z]/.test(newPassword) ||
-      !/[0-9!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(newPassword)
-    ) {
-      res.status(400).json({
-        error: 'Password must be at least 8 characters long and contain both letters and numbers or symbols.',
-      });
+    if (!resetAuthToken || !newPassword || newPassword.length < 8) {
+      res.status(400).json({ error: 'Invalid password. Must be at least 8 characters long.' });
       return;
     }
 
     const authRef = db.collection('reset_authorizations').doc(resetAuthToken);
     const snap = await authRef.get();
 
-    if (!snap.exists) {
-      res.status(400).json({ error: 'Invalid or expired reset session. Please request a new recovery code.' });
-      return;
-    }
-
-    const authData = snap.data()!;
-    const now = Date.now();
-
-    if (authData.consumed) {
-      res.status(400).json({ error: 'This reset token has already been used. Please request a new code.' });
-      return;
-    }
-
-    if (now > authData.expiresAt) {
+    if (!snap.exists || snap.data()!.consumed || Date.now() > snap.data()!.expiresAt) {
       res.status(400).json({ error: 'Reset session expired. Please request a new recovery code.' });
       return;
     }
 
-    // Consume the token atomically
-    await authRef.update({
-      consumed: true,
-      usedAt: now,
-    });
+    await authRef.update({ consumed: true, usedAt: Date.now() });
+    const { uid, email } = snap.data()!;
 
-    const uid = authData.uid;
-    const email = authData.email;
-
-    // Update password via Firebase Admin SDK
-    await auth.updateUser(uid, {
-      password: newPassword,
-    });
-
-    // Revoke all existing sessions and refresh tokens on other devices
+    await auth.updateUser(uid, { password: newPassword });
     await auth.revokeRefreshTokens(uid);
 
-    // Send security notification email
     try {
       await sendPasswordChangedEmail(email);
-    } catch (mailErr) {
-      console.warn('[reset-password] Failed to dispatch confirmation email:', mailErr);
-    }
+    } catch {}
 
-    console.log(`[reset-password] Successfully updated password and revoked tokens for ${uid} (${email})`);
-
-    res.json({
-      success: true,
-      message: 'Your password has been successfully updated! You can now sign in with your new password.',
-    });
+    res.json({ success: true, message: 'Password updated successfully!' });
   } catch (err: any) {
-    console.error('[reset-password] Error:', err);
-    res.status(500).json({ error: err.message || 'Failed to update password.' });
+    res.status(500).json({ error: 'Failed to update password.' });
   }
 });
 
-// Export Express app for Vite dev server middleware integration and Cloud Functions
 export { app };
 export default app;
-
-// Start standalone Express Server if run directly via tsx server/index.ts
-const isDirectRun = process.argv[1]?.includes('server/index') || process.env.RUN_STANDALONE === 'true';
-if (isDirectRun) {
-  app.listen(PORT, () => {
-    console.log(`[TradeNest Server] Authentication API running on http://localhost:${PORT}`);
-  });
-}

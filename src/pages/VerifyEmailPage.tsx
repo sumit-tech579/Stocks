@@ -9,11 +9,15 @@ import {
   LogOut,
   ShieldCheck,
   Mail,
-  RefreshCw
+  RefreshCw,
+  Edit3,
+  X,
+  Info
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { Card } from '../components/common/Card';
 import { Button } from '../components/common/Button';
+import { Input } from '../components/common/Input';
 import confetti from 'canvas-confetti';
 
 function maskEmail(email?: string): string {
@@ -31,8 +35,8 @@ export const VerifyEmailPage: React.FC = () => {
     isDemo, 
     verifyEmailCode, 
     sendVerificationCode, 
+    changeEmail,
     reloadUserProfile,
-    previewVerificationCode,
     signOut 
   } = useAuth();
   
@@ -49,6 +53,12 @@ export const VerifyEmailPage: React.FC = () => {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
+
+  // Change Email Modal state
+  const [isChangingEmail, setIsChangingEmail] = useState(false);
+  const [newEmailInput, setNewEmailInput] = useState('');
+  const [isSubmittingNewEmail, setIsSubmittingNewEmail] = useState(false);
+  const [changeEmailError, setChangeEmailError] = useState<string | null>(null);
 
   // If already verified or in demo mode, navigate straight to dashboard
   useEffect(() => {
@@ -138,14 +148,6 @@ export const VerifyEmailPage: React.FC = () => {
     inputRefs.current[nextFocusIndex]?.focus();
   };
 
-  // Autofill code from preview helper
-  const handleAutofill = (code: string) => {
-    const chars = code.slice(0, 6).split('');
-    setDigits(chars);
-    setErrorMessage(null);
-    inputRefs.current[5]?.focus();
-  };
-
   // Trigger celebratory confetti on success
   const triggerConfetti = () => {
     try {
@@ -227,14 +229,48 @@ export const VerifyEmailPage: React.FC = () => {
           navigate('/', { replace: true });
         }, 1200);
       } else {
-        setStatusMessage('Verification pending. Please enter the 6-digit code sent to your email or click the link in your email.');
+        setStatusMessage('Verification pending. Please enter the 6-digit code sent to your email.');
       }
     } finally {
       setIsCheckingStatus(false);
     }
   };
 
-  // Handle user signing out to switch account
+  // Handle email update submission
+  const handleSaveNewEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setChangeEmailError(null);
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!newEmailInput.trim() || !emailRegex.test(newEmailInput.trim())) {
+      setChangeEmailError('Please enter a valid email address.');
+      return;
+    }
+
+    if (newEmailInput.trim().toLowerCase() === user?.email?.toLowerCase()) {
+      setChangeEmailError('New email must be different from current email.');
+      return;
+    }
+
+    setIsSubmittingNewEmail(true);
+    try {
+      const { error, message } = await changeEmail(newEmailInput.trim().toLowerCase());
+      if (error) {
+        setChangeEmailError(error);
+      } else {
+        setIsChangingEmail(false);
+        setNewEmailInput('');
+        setStatusMessage(message || `Email updated to ${newEmailInput.trim()}. A new verification code has been sent.`);
+        setResendCooldown(60);
+        setDigits(['', '', '', '', '', '']);
+        inputRefs.current[0]?.focus();
+      }
+    } finally {
+      setIsSubmittingNewEmail(false);
+    }
+  };
+
+  // Handle user signing out
   const handleSignOut = async () => {
     await signOut();
     navigate('/signin', { replace: true });
@@ -258,7 +294,7 @@ export const VerifyEmailPage: React.FC = () => {
           <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
             {isSuccess 
               ? 'Your TradeNest paper trading account is verified and ready'
-              : 'Enter the 6-digit verification code sent to your email address'
+              : 'Enter the six-digit code sent to your registered email.'
             }
           </p>
         </div>
@@ -278,12 +314,75 @@ export const VerifyEmailPage: React.FC = () => {
             </div>
             <button
               type="button"
-              onClick={handleSignOut}
-              className="text-xs font-medium text-slate-500 hover:text-rose-500 transition-colors shrink-0 ml-2"
+              onClick={() => {
+                setIsChangingEmail(true);
+                setNewEmailInput(user?.email || '');
+                setChangeEmailError(null);
+              }}
+              className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300 transition-colors shrink-0 ml-2 inline-flex items-center gap-1"
             >
-              Change
+              <Edit3 className="w-3.5 h-3.5" />
+              <span>Change</span>
             </button>
           </div>
+
+          {/* Change Email Inline Form / Modal */}
+          {isChangingEmail && (
+            <form onSubmit={handleSaveNewEmail} className="p-4 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 space-y-3 animate-in fade-in">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                  Update Registered Email
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsChangingEmail(false)}
+                  className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {changeEmailError && (
+                <div className="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 text-xs text-rose-700 dark:text-rose-300 flex items-center gap-2">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{changeEmailError}</span>
+                </div>
+              )}
+
+              <Input
+                label="New Email Address"
+                type="email"
+                placeholder="name@example.com"
+                value={newEmailInput}
+                onChange={e => setNewEmailInput(e.target.value)}
+                required
+                className="text-xs sm:text-sm"
+              />
+
+              <div className="flex items-center gap-2 pt-1">
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="sm"
+                  className="w-full text-xs font-semibold"
+                  isLoading={isSubmittingNewEmail}
+                  disabled={isSubmittingNewEmail}
+                >
+                  Update & Send Code
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => setIsChangingEmail(false)}
+                  disabled={isSubmittingNewEmail}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          )}
 
           {/* Success Alert */}
           {statusMessage && (
@@ -298,41 +397,6 @@ export const VerifyEmailPage: React.FC = () => {
             <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 text-xs sm:text-sm text-rose-700 dark:text-rose-300 flex items-start gap-2.5 animate-in fade-in">
               <AlertCircle className="w-4 h-4 shrink-0 text-rose-500 mt-0.5" />
               <span className="leading-snug">{errorMessage}</span>
-            </div>
-          )}
-
-          {/* Development / Preview Mode Notice when SMTP is not configured */}
-          {previewVerificationCode && !isSuccess && (
-            <div className="p-4 rounded-2xl bg-emerald-50/90 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800/60 space-y-2.5 animate-in fade-in">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800 dark:text-emerald-300">
-                  <Mail className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                  <span>TradeNest Verification Code</span>
-                </div>
-                <span className="text-[10px] uppercase font-bold tracking-wider bg-emerald-200/80 dark:bg-emerald-900/60 text-emerald-900 dark:text-emerald-200 px-2 py-0.5 rounded-full">
-                  Live Code
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between bg-white dark:bg-slate-900/90 p-2.5 rounded-xl border border-emerald-200 dark:border-emerald-800/40">
-                <div>
-                  <span className="text-[10px] text-slate-400 block font-medium">Your 6-Digit Code</span>
-                  <span className="font-mono text-2xl font-extrabold text-emerald-600 dark:text-emerald-400 tracking-widest">
-                    {previewVerificationCode}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleAutofill(previewVerificationCode)}
-                  className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-sm transition-colors"
-                >
-                  Fill Code
-                </button>
-              </div>
-
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">
-                Click <strong>Fill Code</strong> to populate the boxes below, or enter it manually to test verification. (To deliver emails to your real inbox, add SMTP credentials in <code>.env</code>).
-              </p>
             </div>
           )}
 
@@ -384,11 +448,11 @@ export const VerifyEmailPage: React.FC = () => {
                 isLoading={isVerifying}
                 disabled={isVerifying || digits.join('').length !== 6}
               >
-                <span>Verify Email Code</span>
+                <span>Verify Code</span>
                 <ArrowRight className="w-4 h-4 ml-1.5" />
               </Button>
 
-              {/* Secondary Actions: Resend Code & Check Status */}
+              {/* Secondary Actions: Resend Code & Refresh Status */}
               <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-1 text-center">
                 <button
                   type="button"
@@ -411,8 +475,16 @@ export const VerifyEmailPage: React.FC = () => {
                   className="text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors inline-flex items-center gap-1.5"
                 >
                   <RefreshCw className={`w-3 h-3 ${isCheckingStatus ? 'animate-spin' : ''}`} />
-                  <span>Refresh Status</span>
+                  <span>Check Status</span>
                 </button>
+              </div>
+
+              {/* Spam Notice */}
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800 flex items-start gap-2.5 text-xs text-slate-500 dark:text-slate-400">
+                <Info className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                <span className="leading-relaxed">
+                  Didn't receive the email? Check your <strong>spam or junk folder</strong>, or request a new code.
+                </span>
               </div>
             </div>
           )}
@@ -430,7 +502,7 @@ export const VerifyEmailPage: React.FC = () => {
 
             <div className="flex items-center gap-1 text-[11px] text-slate-400">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-              <span>Expires in 15 minutes</span>
+              <span>Code expires in 10 minutes</span>
             </div>
           </div>
         </Card>

@@ -9,7 +9,6 @@ import {
   createUserWithEmailAndPassword,
   signInWithPopup,
   firebaseSignOut,
-  sendEmailVerification,
   sendPasswordResetEmail,
   updateProfile,
   onAuthStateChanged,
@@ -31,10 +30,10 @@ interface AuthContextType extends AuthState {
   resendVerificationEmail: () => Promise<{ error: string | null; message?: string }>;
   sendVerificationCode: () => Promise<{ error: string | null; message?: string; retryAfter?: number }>;
   verifyEmailCode: (enteredCode: string) => Promise<{ success: boolean; error: string | null }>;
+  changeEmail: (newEmail: string) => Promise<{ error: string | null; message?: string }>;
   sendPasswordResetCode: (email: string) => Promise<{ error: string | null; message?: string }>;
   verifyPasswordResetCode: (email: string, code: string) => Promise<{ success: boolean; resetAuthToken?: string; error: string | null }>;
   submitNewPassword: (resetAuthToken: string, newPassword: string) => Promise<{ success: boolean; error: string | null; message?: string }>;
-  previewVerificationCode: string | null;
   reloadUserProfile: () => Promise<void>;
   signOut: () => Promise<void>;
   enableDemoMode: () => void;
@@ -70,13 +69,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isDemo, setIsDemo] = useState<boolean>(() => {
     return user?.isDemo ?? false;
   });
-  const [previewVerificationCode, setPreviewVerificationCode] = useState<string | null>(null);
 
   // Ensure Firestore user document exists and sync verification status
-  // True if either native Firebase Auth confirms it OR Firestore profile confirms it
+  // Firebase Authentication's emailVerified value is the authoritative source of truth
   const syncUserToFirestore = async (fbUser: FirebaseUser, displayNameFallback?: string): Promise<UserProfile> => {
     const fullName = fbUser.displayName || displayNameFallback || fbUser.email?.split('@')[0] || 'Trader';
-    let isVerified = Boolean(fbUser.emailVerified);
+    const isVerified = Boolean(fbUser.emailVerified);
 
     if (db) {
       try {
@@ -99,18 +97,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             lastLoginAt: serverTimestamp(),
           });
         } else {
-          const data = userSnap.data();
-          if (data?.emailVerified) {
-            isVerified = true;
-          }
           await updateDoc(userDocRef, {
+            email: fbUser.email || '',
             emailVerified: isVerified,
             photoURL: fbUser.photoURL || null,
             lastLoginAt: serverTimestamp(),
           });
         }
       } catch (err) {
-        console.warn('Firestore user profile sync error (using local cache):', err);
+        console.warn('Firestore user profile sync notice:', err);
       }
     }
 
@@ -147,6 +142,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!mounted) return;
 
       if (fbUser) {
+        // Authoritative: reload user to get fresh emailVerified status on startup
+        try {
+          await reload(fbUser);
+        } catch {}
         const profile = await syncUserToFirestore(fbUser);
         if (mounted) {
           setUser(profile);
@@ -170,7 +169,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     });
 
-    // Auto-reload user profile on window focus (e.g. after user verifies via email link in another tab)
+    // Auto-reload user profile on window focus (e.g. after user verifies via email)
     const handleWindowFocus = () => {
       if (firebaseAuth?.currentUser) {
         reloadUserProfile();
@@ -195,6 +194,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       const userCredential = await signInWithEmailAndPassword(firebaseAuth, email, password);
+      // Reload user to ensure latest verification status
+      await reload(userCredential.user);
       const profile = await syncUserToFirestore(userCredential.user);
       setUser(profile);
       setIsDemo(false);
@@ -236,32 +237,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsDemo(false);
       localStorage.setItem('tradenest_auth_user', JSON.stringify(profile));
 
-      // Trigger verification code / email dispatch
+      // Trigger verification code dispatch to the exact registered email
       try {
         const idToken = await userCredential.user.getIdToken();
-        const apiRes = await safeFetchJson('/api/auth/send-verification-code', {
+        await safeFetchJson('/api/auth/send-verification-code', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${idToken}`,
             'Content-Type': 'application/json',
           },
         });
-
-        if (apiRes.ok && apiRes.data?.code) {
-          setPreviewVerificationCode(apiRes.data.code);
-        } else if (!apiRes.ok) {
-          await sendEmailVerification(userCredential.user);
-          const fallbackCode = Math.floor(100000 + Math.random() * 900000).toString();
-          setPreviewVerificationCode(fallbackCode);
-          if (db) {
-            const userDocRef = doc(db, 'users', userCredential.user.uid);
-            await updateDoc(userDocRef, {
-              emailVerificationCode: fallbackCode,
-              emailVerificationExpiresAt: Date.now() + 15 * 60 * 1000,
-              emailVerificationAttempts: 5,
-            });
-          }
-        }
       } catch (sendErr) {
         console.warn('Initial verification dispatch notice:', sendErr);
       }
@@ -285,7 +270,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Sign In with Google
+  // Sign In with Google (Google emails are pre-verified by Google)
   const signInWithGoogle = async (): Promise<{ error: string | null }> => {
     if (!isFirebaseConfigured || !firebaseAuth || !googleProvider) {
       return { 
@@ -335,9 +320,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
 
       if (res.ok && res.data) {
-        if (res.data.code) {
-          setPreviewVerificationCode(res.data.code);
-        }
         return {
           error: null,
           message: res.data.message || 'A 6-digit verification code has been dispatched to your email.',
@@ -351,40 +333,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      // Backend unreachable or HTML fallback (static Firebase Hosting deployment):
-      // Gracefully fall back to direct Firebase email dispatch and Firestore OTP challenge
-      console.warn('[AuthContext] Backend endpoint unreachable; falling back to Firebase email service.');
-      try {
-        await sendEmailVerification(currentFbUser);
-      } catch (fbMailErr) {
-        console.warn('Firebase sendEmailVerification notice:', fbMailErr);
-      }
-
-      const fallbackCode = Math.floor(100000 + Math.random() * 900000).toString();
-      const expiresAt = Date.now() + 15 * 60 * 1000;
-      setPreviewVerificationCode(fallbackCode);
-
-      if (db) {
-        try {
-          const userDocRef = doc(db, 'users', currentFbUser.uid);
-          await updateDoc(userDocRef, {
-            emailVerificationCode: fallbackCode,
-            emailVerificationExpiresAt: expiresAt,
-            emailVerificationAttempts: 5,
-            updatedAt: serverTimestamp(),
-          });
-        } catch (dbErr) {
-          console.warn('Could not store fallback OTP in Firestore:', dbErr);
-        }
-      }
-
+      // Honest error reporting - never claim success if delivery failed
       return {
-        error: null,
-        message: `A verification email has been dispatched to ${currentFbUser.email}. You can verify by entering the 6-digit code or clicking the verification link in your email.`,
+        error: res.data?.error || res.error || 'Unable to send the verification email right now. Please try again.',
       };
     } catch (err: any) {
       return {
-        error: err.message || 'Failed to dispatch verification code.',
+        error: err.message || 'Unable to send the verification email right now. Please try again.',
       };
     }
   };
@@ -402,7 +357,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const cleanEntered = enteredCode.trim().replace(/\s+/g, '');
     if (cleanEntered.length !== 6) {
-      return { success: false, error: 'Please enter a complete 6-digit verification code.' };
+      return { success: false, error: 'Please enter all 6 digits of the verification code.' };
     }
 
     try {
@@ -433,88 +388,69 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           emailVerified: true,
         };
         setUser(updated);
-        setPreviewVerificationCode(null);
         localStorage.setItem('tradenest_auth_user', JSON.stringify(updated));
         return { success: true, error: null };
       }
 
-      // If backend returned a legitimate failure (e.g. wrong code or expired code)
-      if (!res.isHtmlFallback && res.status !== 0 && res.data?.error) {
-        return { success: false, error: res.data.error };
-      }
-
-      // Direct Firestore validation fallback (for static Firebase Hosting deployments)
-      if (db) {
-        try {
-          const userDocRef = doc(db, 'users', currentFbUser.uid);
-          const snap = await getDoc(userDocRef);
-
-          if (snap.exists()) {
-            const data = snap.data();
-            const storedCode = data?.emailVerificationCode;
-            const expiresAt = data?.emailVerificationExpiresAt;
-            const attempts = data?.emailVerificationAttempts ?? 5;
-
-            if (!storedCode) {
-              return { success: false, error: 'No active verification code found. Please click "Resend Code".' };
-            }
-
-            if (expiresAt && Date.now() > Number(expiresAt)) {
-              return { success: false, error: 'Verification code has expired. Please click "Resend Code" to request a new one.' };
-            }
-
-            if (attempts <= 0) {
-              return { success: false, error: 'Maximum attempts exceeded for this code. Please click "Resend Code".' };
-            }
-
-            if (cleanEntered !== storedCode) {
-              await updateDoc(userDocRef, {
-                emailVerificationAttempts: attempts - 1,
-              });
-              const rem = attempts - 1;
-              return {
-                success: false,
-                error: `Incorrect code. ${rem > 0 ? `${rem} attempts remaining.` : 'Code locked. Please request a new code.'}`,
-              };
-            }
-
-            // Code is correct! Mark verified in Firestore
-            await updateDoc(userDocRef, {
-              emailVerified: true,
-              emailVerificationCode: null,
-              emailVerificationExpiresAt: null,
-              updatedAt: serverTimestamp(),
-            });
-
-            try {
-              await reload(currentFbUser);
-              await currentFbUser.getIdToken(true);
-            } catch {}
-
-            const updated: UserProfile = {
-              ...(user || {
-                id: currentFbUser.uid,
-                uid: currentFbUser.uid,
-                email: currentFbUser.email || '',
-                fullName: currentFbUser.displayName || 'Trader',
-                isDemo: false,
-                createdAt: currentFbUser.metadata.creationTime || new Date().toISOString(),
-              }),
-              emailVerified: true,
-            };
-            setUser(updated);
-            setPreviewVerificationCode(null);
-            localStorage.setItem('tradenest_auth_user', JSON.stringify(updated));
-            return { success: true, error: null };
-          }
-        } catch (dbErr: any) {
-          return { success: false, error: dbErr.message || 'Verification failed.' };
-        }
-      }
-
-      return { success: false, error: res.error || 'Verification failed. Please try again.' };
+      return {
+        success: false,
+        error: res.data?.error || res.error || 'Invalid verification code. Please check and try again.',
+      };
     } catch (err: any) {
       return { success: false, error: err.message || 'Failed to connect to verification service.' };
+    }
+  };
+
+  // Change Email Address and automatically dispatch a fresh code
+  const changeEmail = async (newEmail: string): Promise<{ error: string | null; message?: string }> => {
+    if (isDemo) {
+      return { error: null, message: 'Demo mode: email updated.' };
+    }
+
+    const currentFbUser = firebaseAuth?.currentUser;
+    if (!currentFbUser) {
+      return { error: 'No active session found. Please sign in.' };
+    }
+
+    const cleanEmail = newEmail.trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
+      return { error: 'Please enter a valid email address.' };
+    }
+
+    try {
+      const idToken = await currentFbUser.getIdToken();
+      const res = await safeFetchJson('/api/auth/change-email', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${idToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ newEmail: cleanEmail }),
+      });
+
+      if (res.ok) {
+        // Reload Firebase user and force refresh ID token
+        await reload(currentFbUser);
+        await currentFbUser.getIdToken(true);
+
+        const updatedProfile = await syncUserToFirestore(currentFbUser);
+        setUser(updatedProfile);
+        localStorage.setItem('tradenest_auth_user', JSON.stringify(updatedProfile));
+
+        return {
+          error: null,
+          message: res.data?.message || `Email address updated to ${cleanEmail}. A new 6-digit verification code has been dispatched.`,
+        };
+      }
+
+      return {
+        error: res.data?.error || res.error || 'Unable to update email address. Please try again.',
+      };
+    } catch (err: any) {
+      return {
+        error: err.message || 'Unable to update email address. Please try again.',
+      };
     }
   };
 
@@ -535,7 +471,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { error: null, message: res.data?.message || 'If an account exists with this email, a recovery code has been sent.' };
       }
 
-      // Static fallback: send Firebase password reset email
+      // Static fallback: send Firebase password reset email if Cloud Functions is offline
       if (firebaseAuth) {
         try {
           await sendPasswordResetEmail(firebaseAuth, email.trim().toLowerCase());
@@ -652,7 +588,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setUser(null);
     setIsDemo(false);
-    setPreviewVerificationCode(null);
     localStorage.removeItem('tradenest_auth_user');
   };
 
@@ -677,10 +612,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         resendVerificationEmail,
         sendVerificationCode,
         verifyEmailCode,
+        changeEmail,
         sendPasswordResetCode,
         verifyPasswordResetCode,
         submitNewPassword,
-        previewVerificationCode,
         reloadUserProfile,
         signOut,
         enableDemoMode,

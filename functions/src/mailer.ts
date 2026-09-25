@@ -1,9 +1,6 @@
 import nodemailer from 'nodemailer';
-import dotenv from 'dotenv';
 
-dotenv.config();
-
-// Provider credentials
+// Provider credentials from Cloud Functions environment / process.env
 const resendApiKey = process.env.RESEND_API_KEY || (process.env.EMAIL_PROVIDER_API_KEY?.startsWith('re_') ? process.env.EMAIL_PROVIDER_API_KEY : '');
 const sendgridApiKey = process.env.SENDGRID_API_KEY || (process.env.EMAIL_PROVIDER_API_KEY?.startsWith('SG.') ? process.env.EMAIL_PROVIDER_API_KEY : '');
 
@@ -30,15 +27,11 @@ if (smtpHost && smtpUser && smtpPass) {
         pass: smtpPass,
       },
     });
-    console.log(`[Mailer] Initialized SMTP transporter (${smtpHost}:${smtpPort})`);
   } catch (err) {
     console.error('[Mailer] Failed to initialize SMTP transporter:', err);
   }
 }
 
-/**
- * Base email layout wrapper with TradeNest emerald branding
- */
 function wrapEmailTemplate(contentHtml: string): string {
   return `
 <!DOCTYPE html>
@@ -154,11 +147,8 @@ function wrapEmailTemplate(contentHtml: string): string {
 `;
 }
 
-/**
- * Dispatches email using Resend REST API, SendGrid REST API, or Nodemailer SMTP
- */
 async function dispatchEmail(to: string, subject: string, html: string): Promise<void> {
-  // 1. Try Resend REST API
+  // 1. Resend REST API
   if (resendApiKey) {
     try {
       const response = await fetch('https://api.resend.com/emails', {
@@ -189,7 +179,7 @@ async function dispatchEmail(to: string, subject: string, html: string): Promise
     }
   }
 
-  // 2. Try SendGrid REST API
+  // 2. SendGrid REST API
   if (sendgridApiKey) {
     try {
       const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
@@ -220,7 +210,7 @@ async function dispatchEmail(to: string, subject: string, html: string): Promise
     }
   }
 
-  // 3. Try Nodemailer SMTP
+  // 3. Nodemailer SMTP
   if (smtpTransporter) {
     try {
       await smtpTransporter.sendMail({
@@ -237,14 +227,10 @@ async function dispatchEmail(to: string, subject: string, html: string): Promise
     }
   }
 
-  // No email provider configured
-  console.error('[Mailer] No email provider configured! Set EMAIL_PROVIDER_API_KEY (Resend/SendGrid) or SMTP credentials (SMTP_HOST, SMTP_USER, SMTP_PASS) in .env.');
-  throw new Error('Unable to send the verification email right now. Email service is not configured. Please try again later.');
+  console.error('[Mailer] No email provider credentials configured.');
+  throw new Error('Unable to send the verification email right now. Please try again.');
 }
 
-/**
- * Send 6-digit email verification code
- */
 export async function sendVerificationEmail(email: string, code: string): Promise<void> {
   const content = `
     <div class="badge">EMAIL VERIFICATION</div>
@@ -268,9 +254,6 @@ export async function sendVerificationEmail(email: string, code: string): Promis
   );
 }
 
-/**
- * Send 6-digit password reset code
- */
 export async function sendPasswordResetEmail(email: string, code: string): Promise<void> {
   const content = `
     <div class="badge" style="background-color: rgba(245, 158, 11, 0.15); color: #fbbf24;">PASSWORD RECOVERY</div>
@@ -294,9 +277,6 @@ export async function sendPasswordResetEmail(email: string, code: string): Promi
   );
 }
 
-/**
- * Send confirmation after password was successfully changed
- */
 export async function sendPasswordChangedEmail(email: string): Promise<void> {
   const content = `
     <div class="badge">SECURITY NOTIFICATION</div>
@@ -316,9 +296,6 @@ export async function sendPasswordChangedEmail(email: string): Promise<void> {
   );
 }
 
-/**
- * Send security notice for Google Sign-In accounts attempting password reset
- */
 export async function sendGoogleAccountNoticeEmail(email: string): Promise<void> {
   const content = `
     <div class="badge" style="background-color: rgba(59, 130, 246, 0.15); color: #60a5fa;">SIGN-IN INFORMATION</div>
