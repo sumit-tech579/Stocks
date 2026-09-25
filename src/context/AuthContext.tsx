@@ -9,7 +9,6 @@ import {
   createUserWithEmailAndPassword,
   signInWithPopup,
   firebaseSignOut,
-  sendPasswordResetEmail,
   updateProfile,
   onAuthStateChanged,
   reload,
@@ -460,32 +459,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { error: null, message: 'If an account exists with this email, a recovery code has been sent.' };
     }
 
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return { error: 'Please enter a valid email address.' };
+    }
+
     try {
       const res = await safeFetchJson('/api/auth/send-password-reset-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+        body: JSON.stringify({ email: cleanEmail }),
       });
 
       if (res.ok) {
-        return { error: null, message: res.data?.message || 'If an account exists with this email, a recovery code has been sent.' };
+        return {
+          error: null,
+          message: res.data?.message || 'A 6-digit recovery code has been dispatched to your email address.',
+        };
       }
 
-      // Static fallback: send Firebase password reset email if Cloud Functions is offline
-      if (firebaseAuth) {
-        try {
-          await sendPasswordResetEmail(firebaseAuth, email.trim().toLowerCase());
-        } catch (fbErr: any) {
-          console.warn('Firebase sendPasswordResetEmail notice:', fbErr);
-        }
+      if (res.status === 429) {
+        return {
+          error: res.data?.error || 'Please wait before requesting another recovery code.',
+        };
       }
 
       return {
-        error: null,
-        message: 'If an account exists with this email address, password recovery instructions have been sent to your inbox.',
+        error: res.data?.error || res.error || 'Unable to send 6-digit recovery code. Please ensure the authentication service is configured.',
       };
     } catch (err: any) {
-      return { error: err.message || 'Failed to dispatch password recovery request.' };
+      return {
+        error: err.message || 'Unable to send 6-digit recovery code. Please try again.',
+      };
     }
   };
 

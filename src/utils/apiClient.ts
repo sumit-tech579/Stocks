@@ -11,12 +11,16 @@ export interface ApiResponse<T = any> {
   isHtmlFallback?: boolean;
 }
 
+const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+
 export async function safeFetchJson<T = any>(
   url: string,
   options?: RequestInit
 ): Promise<ApiResponse<T>> {
+  const targetUrl = url.startsWith('/') && API_BASE ? `${API_BASE}${url}` : url;
+
   try {
-    const res = await fetch(url, {
+    const res = await fetch(targetUrl, {
       ...options,
       headers: {
         'Accept': 'application/json',

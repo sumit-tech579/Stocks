@@ -374,7 +374,11 @@ app.post('/api/auth/send-password-reset-code', async (req: Request, res: Respons
 
     try {
       await sendPasswordResetEmail(cleanEmail, code);
-    } catch {}
+    } catch (mailErr: any) {
+      console.error('[send-password-reset-code] Mail delivery failed:', mailErr?.message || mailErr);
+      res.status(500).json({ error: 'Unable to send the recovery code email right now. Please try again.' });
+      return;
+    }
 
     res.json(genericSuccess);
   } catch (err: any) {
