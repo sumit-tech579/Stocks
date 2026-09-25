@@ -1,27 +1,36 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { 
-  Mail, 
   CheckCircle2, 
   RotateCw, 
   ArrowRight, 
   AlertCircle, 
-  ShieldCheck, 
-  Copy, 
-  Check, 
-  KeyRound
+  KeyRound,
+  LogOut,
+  ShieldCheck,
+  Mail
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { Card } from '../components/common/Card';
 import { Button } from '../components/common/Button';
 import confetti from 'canvas-confetti';
 
+function maskEmail(email?: string): string {
+  if (!email || !email.includes('@')) return email || '';
+  const [name, domain] = email.split('@');
+  if (name.length <= 2) {
+    return `${name[0]}***@${domain}`;
+  }
+  return `${name[0]}***${name[name.length - 1]}@${domain}`;
+}
+
 export const VerifyEmailPage: React.FC = () => {
   const { 
     user, 
+    isDemo, 
     verifyEmailCode, 
     sendVerificationCode, 
-    currentVerificationCode 
+    signOut 
   } = useAuth();
   
   const navigate = useNavigate();
@@ -33,17 +42,23 @@ export const VerifyEmailPage: React.FC = () => {
   const [resendCooldown, setResendCooldown] = useState(0);
   const [isResending, setIsResending] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
-  const [hasCopied, setHasCopied] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
 
-  // If already verified, show verified status
+  // If already verified or in demo mode, navigate straight to dashboard
   useEffect(() => {
-    if (user?.emailVerified) {
-      setIsSuccess(true);
+    if (user?.emailVerified || isDemo) {
+      navigate('/', { replace: true });
     }
-  }, [user?.emailVerified]);
+  }, [user?.emailVerified, isDemo, navigate]);
+
+  // If not signed in at all, redirect to signin
+  useEffect(() => {
+    if (!user && !isDemo) {
+      navigate('/signin', { replace: true });
+    }
+  }, [user, isDemo, navigate]);
 
   // Resend cooldown timer
   useEffect(() => {
@@ -63,7 +78,6 @@ export const VerifyEmailPage: React.FC = () => {
 
   // Handle digit input change
   const handleDigitChange = (index: number, value: string) => {
-    // Only accept numeric characters
     const cleanVal = value.replace(/\D/g, '');
     if (!cleanVal) {
       const next = [...digits];
@@ -72,7 +86,6 @@ export const VerifyEmailPage: React.FC = () => {
       return;
     }
 
-    // Single digit entry
     const char = cleanVal.slice(-1);
     const next = [...digits];
     next[index] = char;
@@ -85,7 +98,7 @@ export const VerifyEmailPage: React.FC = () => {
     }
   };
 
-  // Handle keyboard navigation (Backspace, ArrowLeft, ArrowRight)
+  // Handle keyboard navigation
   const handleKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Backspace') {
       if (!digits[index] && index > 0) {
@@ -113,7 +126,6 @@ export const VerifyEmailPage: React.FC = () => {
     setDigits(next);
     setErrorMessage(null);
 
-    // Focus on the next empty or last box
     const nextFocusIndex = Math.min(pasteData.length, 5);
     inputRefs.current[nextFocusIndex]?.focus();
   };
@@ -122,9 +134,9 @@ export const VerifyEmailPage: React.FC = () => {
   const triggerConfetti = () => {
     try {
       confetti({
-        particleCount: 70,
-        spread: 70,
-        origin: { y: 0.7 },
+        particleCount: 80,
+        spread: 75,
+        origin: { y: 0.65 },
         colors: ['#00D09C', '#10B981', '#34D399', '#6EE7B7'],
       });
     } catch {}
@@ -146,14 +158,13 @@ export const VerifyEmailPage: React.FC = () => {
       const { success, error } = await verifyEmailCode(fullCode);
       if (success) {
         setIsSuccess(true);
-        setStatusMessage('Email verified successfully! Your account is fully active.');
+        setStatusMessage('Email verified successfully! Opening your trading dashboard...');
         triggerConfetti();
         setTimeout(() => {
           navigate('/', { replace: true });
-        }, 1600);
+        }, 1500);
       } else {
-        setErrorMessage(error || 'Invalid verification code. Please check the code and try again.');
-        // Clear and refocus first box on failure
+        setErrorMessage(error || 'Invalid verification code. Please check and try again.');
         inputRefs.current[0]?.focus();
       }
     } finally {
@@ -169,12 +180,15 @@ export const VerifyEmailPage: React.FC = () => {
     setStatusMessage(null);
 
     try {
-      const { error, message } = await sendVerificationCode();
+      const { error, message, retryAfter } = await sendVerificationCode();
       if (error) {
         setErrorMessage(error);
+        if (retryAfter) {
+          setResendCooldown(retryAfter);
+        }
       } else {
-        setStatusMessage(message || 'A fresh 6-digit verification code has been dispatched.');
-        setResendCooldown(30); // 30s cooldown
+        setStatusMessage(message || 'A fresh 6-digit verification code has been dispatched to your email.');
+        setResendCooldown(60); // 60s cooldown
         setDigits(['', '', '', '', '', '']);
         inputRefs.current[0]?.focus();
       }
@@ -183,16 +197,10 @@ export const VerifyEmailPage: React.FC = () => {
     }
   };
 
-  // Copy code helper (auto-fills digit boxes for rapid testing)
-  const handleCopyAndAutofill = (code: string) => {
-    navigator.clipboard.writeText(code);
-    setHasCopied(true);
-    setTimeout(() => setHasCopied(false), 2000);
-
-    const codeChars = code.split('').slice(0, 6);
-    setDigits(codeChars);
-    setErrorMessage(null);
-    inputRefs.current[5]?.focus();
+  // Handle user signing out to switch account
+  const handleSignOut = async () => {
+    await signOut();
+    navigate('/signin', { replace: true });
   };
 
   return (
@@ -208,7 +216,7 @@ export const VerifyEmailPage: React.FC = () => {
             {isSuccess ? <CheckCircle2 className="w-8 h-8" /> : <KeyRound className="w-7 h-7" />}
           </div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
-            {isSuccess ? 'Email Verified!' : 'Enter Verification Code'}
+            {isSuccess ? 'Email Verified!' : 'Verify Your Email'}
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
             {isSuccess 
@@ -221,61 +229,27 @@ export const VerifyEmailPage: React.FC = () => {
         {/* Card */}
         <Card className="p-6 sm:p-8 space-y-5 shadow-xl border-slate-200/80 dark:border-slate-800">
           {/* Target Email address */}
-          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800 text-center">
-            <span className="text-xs text-slate-400 block font-medium">Code dispatched to:</span>
-            <span className="font-semibold text-slate-900 dark:text-slate-100 text-sm break-all">
-              {user?.email || 'your registered email'}
-            </span>
-          </div>
-
-          {/* In-App Email Dispatch Preview Card */}
-          {currentVerificationCode && !isSuccess && (
-            <div className="p-4 rounded-2xl bg-emerald-50/80 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 space-y-2.5 animate-in fade-in">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800 dark:text-emerald-300">
-                  <Mail className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                  <span>TradeNest Email Dispatch Preview</span>
-                </div>
-                <span className="text-[10px] uppercase tracking-wider font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/50 px-2 py-0.5 rounded-full">
-                  Live OTP
+          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800 flex items-center justify-between">
+            <div className="flex items-center gap-2.5 overflow-hidden">
+              <Mail className="w-4 h-4 text-slate-400 shrink-0" />
+              <div className="truncate">
+                <span className="text-[11px] text-slate-400 block font-medium">Sent to:</span>
+                <span className="font-semibold text-slate-900 dark:text-slate-100 text-sm font-mono">
+                  {maskEmail(user?.email)}
                 </span>
               </div>
-
-              <div className="flex items-center justify-between bg-white dark:bg-slate-900/80 p-2.5 rounded-xl border border-emerald-200/70 dark:border-emerald-800/40">
-                <div>
-                  <span className="text-[10px] text-slate-400 block">Your 6-Digit Code</span>
-                  <span className="font-mono text-xl font-extrabold text-emerald-700 dark:text-emerald-300 tracking-wider">
-                    {currentVerificationCode}
-                  </span>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => handleCopyAndAutofill(currentVerificationCode)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-sm transition-colors"
-                >
-                  {hasCopied ? (
-                    <>
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Copied!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5" />
-                      <span>Fill Code</span>
-                    </>
-                  )}
-                </button>
-              </div>
-
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">
-                Click <strong>Fill Code</strong> to automatically populate the 6 boxes below, or enter it manually.
-              </p>
             </div>
-          )}
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="text-xs font-medium text-slate-500 hover:text-rose-500 transition-colors shrink-0 ml-2"
+            >
+              Change
+            </button>
+          </div>
 
           {/* Success Alert */}
-          {statusMessage && isSuccess && (
+          {statusMessage && (
             <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 text-xs sm:text-sm text-emerald-700 dark:text-emerald-300 flex items-start gap-2.5 animate-in fade-in">
               <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500 mt-0.5" />
               <span className="leading-snug">{statusMessage}</span>
@@ -290,12 +264,12 @@ export const VerifyEmailPage: React.FC = () => {
             </div>
           )}
 
-          {!isSuccess ? (
+          {!isSuccess && (
             <div className="space-y-4">
               {/* 6-Digit OTP Input Grid */}
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 text-center">
-                  Enter 6-Digit Verification Code
+                  6-Digit Verification Code
                 </label>
 
                 <div 
@@ -308,6 +282,7 @@ export const VerifyEmailPage: React.FC = () => {
                       ref={el => (inputRefs.current[idx] = el)}
                       type="text"
                       inputMode="numeric"
+                      autoComplete="one-time-code"
                       pattern="[0-9]*"
                       maxLength={1}
                       value={digit}
@@ -352,40 +327,28 @@ export const VerifyEmailPage: React.FC = () => {
                   <RotateCw className={`w-3.5 h-3.5 ${isResending ? 'animate-spin' : ''}`} />
                   <span>
                     {resendCooldown > 0
-                      ? `Resend new code in ${resendCooldown}s`
+                      ? `Resend code in ${resendCooldown}s`
                       : "Didn't receive the code? Resend Code"}
                   </span>
                 </button>
               </div>
             </div>
-          ) : (
-            <div className="space-y-3 pt-2">
-              <Link to="/">
-                <Button variant="primary" size="lg" className="w-full font-semibold">
-                  <span>Go to Trading Dashboard</span>
-                  <ArrowRight className="w-4 h-4 ml-2" />
-                </Button>
-              </Link>
-            </div>
           )}
 
-          {/* Footer Navigation */}
-          <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
-            <Link to="/">
-              <Button
-                type="button"
-                variant="secondary"
-                size="md"
-                className="w-full flex items-center justify-center gap-2 border border-slate-200 dark:border-slate-700"
-              >
-                <span>Continue to Dashboard Without Verifying</span>
-                <ArrowRight className="w-4 h-4" />
-              </Button>
-            </Link>
+          {/* Footer Controls */}
+          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="inline-flex items-center text-xs font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5 mr-1" />
+              <span>Sign out</span>
+            </button>
 
-            <div className="flex items-center justify-center gap-1.5 text-xs text-slate-400 text-center">
+            <div className="flex items-center gap-1 text-[11px] text-slate-400">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-              <span>Simulated paper trading is active with ₹1,00,000 cash.</span>
+              <span>Expires in 10 minutes</span>
             </div>
           </div>
         </Card>

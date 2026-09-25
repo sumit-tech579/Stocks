@@ -49,6 +49,17 @@ service cloud.firestore {
       }
     }
 
+    // Backend-only authentication collections (Zero direct client access)
+    match /auth_challenges/{challengeId} {
+      allow read, write: if false;
+    }
+    match /reset_authorizations/{token} {
+      allow read, write: if false;
+    }
+    match /rate_limits/{limitId} {
+      allow read, write: if false;
+    }
+
     // Default deny for any unspecified documents
     match /{document=**} {
       allow read, write: if false;

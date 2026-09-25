@@ -45,5 +45,10 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
     return <Navigate to="/signin" state={{ from: location }} replace />;
   }
 
+  // If user is logged in but email is not verified and not demo, redirect to verify-email
+  if (user && !user.emailVerified && !isDemo) {
+    return <Navigate to="/verify-email" replace />;
+  }
+
   return children ? <>{children}</> : <Outlet />;
 };
