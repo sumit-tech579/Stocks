@@ -134,8 +134,11 @@ app.post('/api/auth/send-verification-code', requireAuth, async (req: Request, r
 
     res.json({
       success: true,
-      message: 'A 6-digit verification code has been sent to your email.',
+      message: mailResult.preview
+        ? 'Verification code generated (SMTP not configured in server .env).'
+        : 'A 6-digit verification code has been sent to your email.',
       preview: mailResult.preview,
+      code: mailResult.preview ? code : undefined,
       expiresIn: 600,
     });
   } catch (err: any) {
@@ -323,9 +326,13 @@ app.post('/api/auth/send-password-reset-code', async (req: Request, res: Respons
       consumed: false,
     });
 
-    await sendPasswordResetEmail(cleanEmail, code);
+    const mailResult = await sendPasswordResetEmail(cleanEmail, code);
 
-    res.json(genericSuccess);
+    res.json({
+      ...genericSuccess,
+      preview: mailResult.preview,
+      code: mailResult.preview ? code : undefined,
+    });
   } catch (err: any) {
     console.error('[send-password-reset-code] Error:', err);
     res.status(500).json({ error: 'Unable to process password reset request. Please try again later.' });

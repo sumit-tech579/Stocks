@@ -169,10 +169,11 @@ async function sendEmail(to: string, subject: string, html: string): Promise<{ s
   } else {
     // Development fallback when SMTP credentials are not yet set in .env
     console.log(`\n======================================================`);
-    console.log(`[DEVELOPMENT EMAIL PREVIEW] (Set SMTP credentials in .env for real delivery)`);
+    console.log(`[DEVELOPMENT EMAIL PREVIEW]`);
     console.log(`To: ${to}`);
     console.log(`Subject: ${subject}`);
     console.log(`Timestamp: ${new Date().toISOString()}`);
+    console.log(`Notice: Email was NOT delivered to inbox because SMTP credentials (SMTP_USER, SMTP_PASS) are not set in .env.`);
     console.log(`======================================================\n`);
     return { success: true, preview: true };
   }

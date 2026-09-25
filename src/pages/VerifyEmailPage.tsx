@@ -32,6 +32,7 @@ export const VerifyEmailPage: React.FC = () => {
     verifyEmailCode, 
     sendVerificationCode, 
     reloadUserProfile,
+    previewVerificationCode,
     signOut 
   } = useAuth();
   
@@ -135,6 +136,14 @@ export const VerifyEmailPage: React.FC = () => {
 
     const nextFocusIndex = Math.min(pasteData.length, 5);
     inputRefs.current[nextFocusIndex]?.focus();
+  };
+
+  // Autofill code from preview helper
+  const handleAutofill = (code: string) => {
+    const chars = code.slice(0, 6).split('');
+    setDigits(chars);
+    setErrorMessage(null);
+    inputRefs.current[5]?.focus();
   };
 
   // Trigger celebratory confetti on success
@@ -289,6 +298,41 @@ export const VerifyEmailPage: React.FC = () => {
             <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 text-xs sm:text-sm text-rose-700 dark:text-rose-300 flex items-start gap-2.5 animate-in fade-in">
               <AlertCircle className="w-4 h-4 shrink-0 text-rose-500 mt-0.5" />
               <span className="leading-snug">{errorMessage}</span>
+            </div>
+          )}
+
+          {/* Development / Preview Mode Notice when SMTP is not configured */}
+          {previewVerificationCode && !isSuccess && (
+            <div className="p-4 rounded-2xl bg-emerald-50/90 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800/60 space-y-2.5 animate-in fade-in">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                  <Mail className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  <span>TradeNest Verification Code</span>
+                </div>
+                <span className="text-[10px] uppercase font-bold tracking-wider bg-emerald-200/80 dark:bg-emerald-900/60 text-emerald-900 dark:text-emerald-200 px-2 py-0.5 rounded-full">
+                  Live Code
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between bg-white dark:bg-slate-900/90 p-2.5 rounded-xl border border-emerald-200 dark:border-emerald-800/40">
+                <div>
+                  <span className="text-[10px] text-slate-400 block font-medium">Your 6-Digit Code</span>
+                  <span className="font-mono text-2xl font-extrabold text-emerald-600 dark:text-emerald-400 tracking-widest">
+                    {previewVerificationCode}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleAutofill(previewVerificationCode)}
+                  className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-sm transition-colors"
+                >
+                  Fill Code
+                </button>
+              </div>
+
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">
+                Click <strong>Fill Code</strong> to populate the boxes below, or enter it manually to test verification. (To deliver emails to your real inbox, add SMTP credentials in <code>.env</code>).
+              </p>
             </div>
           )}
 

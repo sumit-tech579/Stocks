@@ -34,6 +34,7 @@ interface AuthContextType extends AuthState {
   sendPasswordResetCode: (email: string) => Promise<{ error: string | null; message?: string }>;
   verifyPasswordResetCode: (email: string, code: string) => Promise<{ success: boolean; resetAuthToken?: string; error: string | null }>;
   submitNewPassword: (resetAuthToken: string, newPassword: string) => Promise<{ success: boolean; error: string | null; message?: string }>;
+  previewVerificationCode: string | null;
   reloadUserProfile: () => Promise<void>;
   signOut: () => Promise<void>;
   enableDemoMode: () => void;
@@ -69,6 +70,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isDemo, setIsDemo] = useState<boolean>(() => {
     return user?.isDemo ?? false;
   });
+  const [previewVerificationCode, setPreviewVerificationCode] = useState<string | null>(null);
 
   // Ensure Firestore user document exists and sync verification status
   // True if either native Firebase Auth confirms it OR Firestore profile confirms it
@@ -245,10 +247,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           },
         });
 
-        // If backend was not reached, dispatch Firebase native verification
-        if (!apiRes.ok) {
+        if (apiRes.ok && apiRes.data?.code) {
+          setPreviewVerificationCode(apiRes.data.code);
+        } else if (!apiRes.ok) {
           await sendEmailVerification(userCredential.user);
           const fallbackCode = Math.floor(100000 + Math.random() * 900000).toString();
+          setPreviewVerificationCode(fallbackCode);
           if (db) {
             const userDocRef = doc(db, 'users', userCredential.user.uid);
             await updateDoc(userDocRef, {
@@ -331,6 +335,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
 
       if (res.ok && res.data) {
+        if (res.data.code) {
+          setPreviewVerificationCode(res.data.code);
+        }
         return {
           error: null,
           message: res.data.message || 'A 6-digit verification code has been dispatched to your email.',
@@ -355,6 +362,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const fallbackCode = Math.floor(100000 + Math.random() * 900000).toString();
       const expiresAt = Date.now() + 15 * 60 * 1000;
+      setPreviewVerificationCode(fallbackCode);
 
       if (db) {
         try {
@@ -425,6 +433,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           emailVerified: true,
         };
         setUser(updated);
+        setPreviewVerificationCode(null);
         localStorage.setItem('tradenest_auth_user', JSON.stringify(updated));
         return { success: true, error: null };
       }
@@ -494,6 +503,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               emailVerified: true,
             };
             setUser(updated);
+            setPreviewVerificationCode(null);
             localStorage.setItem('tradenest_auth_user', JSON.stringify(updated));
             return { success: true, error: null };
           }
@@ -642,6 +652,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setUser(null);
     setIsDemo(false);
+    setPreviewVerificationCode(null);
     localStorage.removeItem('tradenest_auth_user');
   };
 
@@ -669,6 +680,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         sendPasswordResetCode,
         verifyPasswordResetCode,
         submitNewPassword,
+        previewVerificationCode,
         reloadUserProfile,
         signOut,
         enableDemoMode,
