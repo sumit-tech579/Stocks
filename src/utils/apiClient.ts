@@ -40,7 +40,7 @@ export async function safeFetchJson<T = any>(
         status: res.status,
         isHtmlFallback: isHtml,
         error: isHtml
-          ? 'Backend authentication service is not responding or unreachable at this endpoint.'
+          ? 'Backend authentication service is not active on this domain. Please use http://localhost:3000 or deploy Cloud Functions.'
           : text.slice(0, 200) || `Server returned non-JSON response (${res.status})`,
       };
     }

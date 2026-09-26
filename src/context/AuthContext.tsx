@@ -619,8 +619,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
+      if (res.isHtmlFallback || !res.ok) {
+        return {
+          error: res.data?.error || 'The backend authentication service is not active on this Firebase domain. To use 6-digit recovery on the live site, please upgrade to the Firebase Blaze plan (free tier) and deploy functions, or use http://localhost:3000.',
+        };
+      }
+
       return {
-        error: res.data?.error || res.error || 'Unable to send 6-digit recovery code. Please ensure the authentication service is configured.',
+        error: res.data?.error || res.error || 'Unable to send 6-digit recovery code. Please try again.',
       };
     } catch (err: any) {
       return {
