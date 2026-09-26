@@ -10,7 +10,7 @@ function authApiPlugin(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         if (req.url?.startsWith('/api')) {
           try {
-            const { app } = await import('./server/index');
+            const { app } = await server.ssrLoadModule('./server/index.ts');
             return app(req, res, next);
           } catch (err) {
             console.error('[Vite Auth API Error]:', err);
